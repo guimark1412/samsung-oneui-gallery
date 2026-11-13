@@ -127,13 +127,12 @@ import com.oneui.gallery.ui.theme.OneUISectionCard
 import com.oneui.gallery.ui.theme.OneUIShapeLarge
 import com.oneui.gallery.ui.theme.OneUIShapeMedium
 import com.oneui.gallery.ui.theme.OneUIShapeMenu
-import com.oneui.gallery.ui.theme.OneUIShapeSmall
 import com.oneui.gallery.ui.theme.OneUITheme
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 private enum class GalleryTab(val label: String) {
-    PICTURES("Imagens"),
+    PICTURES("Fotos"),
     ALBUMS("Álbuns"),
     STORIES("Histórias"),
     MENU("Menu")
@@ -280,7 +279,8 @@ fun GalleryApp() {
             if (searchQuery.isBlank()) activeItems
             else activeItems.filter {
                 it.name.contains(searchQuery, ignoreCase = true) ||
-                    it.bucketName.contains(searchQuery, ignoreCase = true)
+                    it.bucketName.contains(searchQuery, ignoreCase = true) ||
+                    (searchQuery.equals("Favoritos", ignoreCase = true) && it.isFavorite)
             }
         }
 
@@ -367,7 +367,8 @@ fun GalleryApp() {
                             MediaRepository.deletePermanently(context, listOf(item))
                             refreshMedia()
                         }
-                    }
+                    },
+                    onRemastered = { refreshMedia() }
                 )
             }
             return@OneUITheme
@@ -473,17 +474,17 @@ fun GalleryApp() {
             return@OneUITheme
         }
 
-        // Main Samsung One UI Gallery 4-Tab Scaffold
+        // Main Samsung One UI 7 / 8 Gallery 4-Tab Scaffold
         val tabTitle = when {
             selectionMode -> "${selectedIds.size} selecionado(s)"
             currentTab == GalleryTab.PICTURES -> "Galeria"
             else -> currentTab.label
         }
         val tabSubtitle = when (currentTab) {
-            GalleryTab.PICTURES -> "${displayedPictures.size} ${if (displayedPictures.size == 1) "foto" else "fotos e vídeos"}"
+            GalleryTab.PICTURES -> "${displayedPictures.size} ${if (displayedPictures.size == 1) "foto" else "itens"} • ${albums.size} álbuns"
             GalleryTab.ALBUMS -> "${albums.size} ${if (albums.size == 1) "álbum" else "álbuns"}"
             GalleryTab.STORIES -> "${stories.size} ${if (stories.size == 1) "história" else "histórias"}"
-            GalleryTab.MENU -> "Configurações e utilitários"
+            GalleryTab.MENU -> "One UI 8 • Configurações"
         }
 
         OneUICollapsingScaffold(
@@ -564,7 +565,7 @@ fun GalleryApp() {
                                             6 -> 2
                                             else -> 3
                                         }
-                                        Text("Colunas da grade (${columnCount} → $nextCols)", color = colors.textPrimary, fontSize = 15.sp)
+                                        Text("Colunas da grade ($columnCount → $nextCols)", color = colors.textPrimary, fontSize = 15.sp)
                                     },
                                     leadingIcon = { Icon(Icons.Outlined.GridView, null, tint = colors.textPrimary) },
                                     onClick = {
@@ -609,32 +610,57 @@ fun GalleryApp() {
             },
             headerExtra = {
                 AnimatedVisibility(visible = showSearch && currentTab == GalleryTab.PICTURES) {
-                    OutlinedTextField(
-                        value = searchQuery,
-                        onValueChange = { searchQuery = it },
-                        placeholder = { Text("Buscar por nome ou álbum...", fontSize = 14.sp) },
-                        leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
-                        trailingIcon = {
-                            if (searchQuery.isNotEmpty()) {
-                                IconButton(onClick = { searchQuery = "" }) {
-                                    Icon(Icons.Outlined.Close, contentDescription = "Limpar")
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        OutlinedTextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
+                            placeholder = { Text("Buscar por nome, álbum ou categoria...", fontSize = 14.sp) },
+                            leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null, tint = colors.primaryBlue) },
+                            trailingIcon = {
+                                if (searchQuery.isNotEmpty()) {
+                                    IconButton(onClick = { searchQuery = "" }) {
+                                        Icon(Icons.Outlined.Close, contentDescription = "Limpar")
+                                    }
                                 }
+                            },
+                            singleLine = true,
+                            shape = RoundedCornerShape(26.dp),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedContainerColor = colors.surfaceCard,
+                                unfocusedContainerColor = colors.surfaceCard,
+                                focusedBorderColor = colors.primaryBlue,
+                                unfocusedBorderColor = colors.divider,
+                                focusedTextColor = colors.textPrimary,
+                                unfocusedTextColor = colors.textPrimary
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 4.dp)
+                        )
+                        // One UI 8 Smart Search Chips
+                        val smartQueries = listOf("Câmera", "Viagem", "Screenshots", "Downloads", "Favoritos")
+                        LazyRow(
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            items(smartQueries) { chip ->
+                                val selected = searchQuery.equals(chip, ignoreCase = true)
+                                FilterChip(
+                                    selected = selected,
+                                    onClick = { searchQuery = if (selected) "" else chip },
+                                    label = { Text(chip, fontSize = 12.sp) },
+                                    shape = RoundedCornerShape(18.dp),
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = colors.primaryBlue,
+                                        selectedLabelColor = Color.White,
+                                        containerColor = colors.surfaceCard,
+                                        labelColor = colors.textSecondary
+                                    ),
+                                    border = null
+                                )
                             }
-                        },
-                        singleLine = true,
-                        shape = RoundedCornerShape(24.dp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedContainerColor = colors.surfaceCard,
-                            unfocusedContainerColor = colors.surfaceCard,
-                            focusedBorderColor = colors.primaryBlue,
-                            unfocusedBorderColor = colors.divider,
-                            focusedTextColor = colors.textPrimary,
-                            unfocusedTextColor = colors.textPrimary
-                        ),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 6.dp)
-                    )
+                        }
+                    }
                 }
             },
             bottomBar = {
@@ -661,9 +687,18 @@ fun GalleryApp() {
                         }
                     )
                 } else {
-                    OneUIGalleryBottomBar(
+                    OneUIFloatingCapsuleBottomBar(
                         currentTab = currentTab,
-                        onSelectTab = { currentTab = it }
+                        isSearchOpen = showSearch,
+                        onSelectTab = { tab ->
+                            currentTab = tab
+                            if (tab != GalleryTab.PICTURES) showSearch = false
+                        },
+                        onToggleSearch = {
+                            currentTab = GalleryTab.PICTURES
+                            showSearch = !showSearch
+                            if (!showSearch) searchQuery = ""
+                        }
                     )
                 }
             }
@@ -716,7 +751,7 @@ fun GalleryApp() {
                                     }
                                 )
 
-                                // Samsung Gallery Signature Floating "Anos | Meses | Dias" Pill
+                                // Samsung One UI Floating "Anos | Meses | Dias" Pill above floating capsule
                                 if (!selectionMode && displayedPictures.isNotEmpty()) {
                                     val activeMode = when {
                                         columnCount >= 6 -> TimelineZoomMode.YEARS
@@ -731,7 +766,8 @@ fun GalleryApp() {
                                         },
                                         modifier = Modifier
                                             .align(Alignment.BottomCenter)
-                                            .padding(bottom = 14.dp)
+                                            .navigationBarsPadding()
+                                            .padding(bottom = 84.dp)
                                     )
                                 }
                             }
@@ -743,6 +779,7 @@ fun GalleryApp() {
                     AlbumsTabContent(
                         albums = albums,
                         activeItems = activeItems,
+                        trashedCount = trashedItems.size,
                         selectedFilter = albumFilter,
                         onSelectFilter = { albumFilter = it },
                         onAlbumClick = { album -> collectionRoute = CollectionRoute.Album(album) },
@@ -800,10 +837,10 @@ private fun OneUITimelineFloatingPill(
         color = colors.floatingPill,
         tonalElevation = 0.dp,
         shadowElevation = 6.dp,
-        modifier = modifier.border(0.5.dp, colors.divider, RoundedCornerShape(24.dp))
+        modifier = modifier.border(0.6.dp, colors.floatingBorder, RoundedCornerShape(24.dp))
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
+            modifier = Modifier.padding(horizontal = 5.dp, vertical = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(2.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -814,7 +851,7 @@ private fun OneUITimelineFloatingPill(
                         .clip(RoundedCornerShape(18.dp))
                         .background(if (selected) colors.surfaceElevated else Color.Transparent)
                         .clickable { onSelectMode(mode) }
-                        .padding(horizontal = 14.dp, vertical = 6.dp)
+                        .padding(horizontal = 14.dp, vertical = 5.dp)
                 ) {
                     Text(
                         text = mode.label,
@@ -841,7 +878,6 @@ private fun MediaGridContent(
     onEnterSelection: (Long) -> Unit,
     onItemClick: (Int) -> Unit
 ) {
-    val context = LocalContext.current
     val colors = LocalOneUIColors.current
     val grouped = remember(items) { items.groupBy { it.dateGroupLabel } }
     val indexById = remember(items) {
@@ -851,12 +887,11 @@ private fun MediaGridContent(
 
     LazyVerticalGrid(
         columns = GridCells.Fixed(columnCount),
-        contentPadding = PaddingValues(top = 4.dp, bottom = 72.dp),
+        contentPadding = PaddingValues(top = 4.dp, bottom = 140.dp),
         horizontalArrangement = Arrangement.spacedBy(1.5.dp),
         verticalArrangement = Arrangement.spacedBy(1.5.dp),
         modifier = Modifier
             .fillMaxSize()
-            // Custom 2-finger pinch that NEVER blocks 1-finger vertical scrolling
             .pointerInput(columnCount) {
                 awaitEachGesture {
                     awaitFirstDown(requireUnconsumed = false)
@@ -1035,7 +1070,6 @@ private fun OneUIGridThumbnail(
             }
         }
 
-        // Samsung One UI Top-Left Check Circle
         if (selectionMode) {
             Box(
                 modifier = Modifier
@@ -1064,6 +1098,7 @@ private fun OneUIGridThumbnail(
 private fun AlbumsTabContent(
     albums: List<AlbumItem>,
     activeItems: List<MediaItem>,
+    trashedCount: Int,
     selectedFilter: AlbumFilter,
     onSelectFilter: (AlbumFilter) -> Unit,
     onAlbumClick: (AlbumItem) -> Unit,
@@ -1101,10 +1136,63 @@ private fun AlbumsTabContent(
         }
     }
 
+    val recentItems = remember(activeItems) { activeItems.take(30) }
+    val favItems = remember(activeItems) { activeItems.filter { it.isFavorite } }
+    val videoItems = remember(activeItems) { activeItems.filter { it.isVideo } }
+
     Column(modifier = Modifier.fillMaxSize()) {
-        // Quick Samsung Album Filter & Collection Pills
+        // One UI 8 Stacked Cards Row (Recentes, Favoritos, Vídeos, Lixeira)
+        if (activeItems.isNotEmpty()) {
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                item {
+                    OneUI8StackedCard(
+                        title = "Recentes",
+                        count = recentItems.size,
+                        coverUri = recentItems.firstOrNull()?.uri,
+                        icon = Icons.Outlined.History,
+                        accent = colors.primaryBlue,
+                        onClick = onOpenRecent
+                    )
+                }
+                item {
+                    OneUI8StackedCard(
+                        title = "Favoritos",
+                        count = favItems.size,
+                        coverUri = favItems.firstOrNull()?.uri,
+                        icon = Icons.Outlined.FavoriteBorder,
+                        accent = colors.galleryRose,
+                        onClick = onOpenFavorites
+                    )
+                }
+                item {
+                    OneUI8StackedCard(
+                        title = "Vídeos",
+                        count = videoItems.size,
+                        coverUri = videoItems.firstOrNull()?.uri,
+                        icon = Icons.Outlined.VideoLibrary,
+                        accent = Color(0xFF34C759),
+                        onClick = onOpenVideos
+                    )
+                }
+                item {
+                    OneUI8StackedCard(
+                        title = "Lixeira",
+                        count = trashedCount,
+                        coverUri = null,
+                        icon = Icons.Outlined.Delete,
+                        accent = colors.textSecondary,
+                        onClick = onOpenTrash
+                    )
+                }
+            }
+        }
+
         LazyRow(
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             items(AlbumFilter.entries) { filter ->
@@ -1148,7 +1236,7 @@ private fun AlbumsTabContent(
         } else {
             LazyVerticalGrid(
                 columns = GridCells.Fixed(3),
-                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 8.dp, bottom = 110.dp),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
                 modifier = Modifier.fillMaxSize()
@@ -1217,49 +1305,96 @@ private fun AlbumsTabContent(
                         )
                     }
                 }
-
-                // Bottom Samsung Quick Collections Shortcut Row
-                item(span = { GridItemSpan(3) }) {
-                    Column(modifier = Modifier.padding(top = 8.dp)) {
-                        HorizontalDivider(color = colors.divider, modifier = Modifier.padding(bottom = 12.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            AlbumShortcutChip("Favoritos", Icons.Outlined.FavoriteBorder, Modifier.weight(1f), onOpenFavorites)
-                            AlbumShortcutChip("Vídeos", Icons.Outlined.VideoLibrary, Modifier.weight(1f), onOpenVideos)
-                            AlbumShortcutChip("Recentes", Icons.Outlined.History, Modifier.weight(1f), onOpenRecent)
-                            AlbumShortcutChip("Lixeira", Icons.Outlined.Delete, Modifier.weight(1f), onOpenTrash)
-                        }
-                    }
-                }
             }
         }
     }
 }
 
+/**
+ * One UI 8 Stacked Card: subtle stacked depth layers behind a rounded squircle cover.
+ */
 @Composable
-private fun AlbumShortcutChip(
-    label: String,
+private fun OneUI8StackedCard(
+    title: String,
+    count: Int,
+    coverUri: Any?,
     icon: ImageVector,
-    modifier: Modifier = Modifier,
+    accent: Color,
     onClick: () -> Unit
 ) {
+    val context = LocalContext.current
     val colors = LocalOneUIColors.current
-    Surface(
-        onClick = onClick,
-        shape = OneUIShapeMedium,
-        color = colors.surfaceCard,
-        modifier = modifier
+
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier
+            .width(86.dp)
+            .clickable(onClick = onClick)
     ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            modifier = Modifier.padding(vertical = 10.dp, horizontal = 4.dp)
+        Box(
+            contentAlignment = Alignment.BottomCenter,
+            modifier = Modifier
+                .width(86.dp)
+                .height(86.dp)
         ) {
-            Icon(icon, contentDescription = label, tint = colors.textPrimary, modifier = Modifier.size(20.dp))
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(label, color = colors.textSecondary, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            // Stacked back layer
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .width(68.dp)
+                    .height(20.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(colors.surfaceElevated)
+            )
+            // Front squircle card
+            Box(
+                modifier = Modifier
+                    .padding(top = 6.dp)
+                    .fillMaxSize()
+                    .clip(OneUIShapeMedium)
+                    .background(colors.surfaceCard)
+                    .border(0.6.dp, colors.divider, OneUIShapeMedium),
+                contentAlignment = Alignment.Center
+            ) {
+                if (coverUri != null) {
+                    AsyncImage(
+                        model = ImageRequest.Builder(context)
+                            .data(coverUri)
+                            .size(220)
+                            .crossfade(true)
+                            .build(),
+                        contentDescription = title,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color(0x55000000))
+                    )
+                }
+                Icon(
+                    imageVector = icon,
+                    contentDescription = title,
+                    tint = if (coverUri != null) Color.White else accent,
+                    modifier = Modifier.size(24.dp)
+                )
+            }
         }
+        Spacer(modifier = Modifier.height(5.dp))
+        Text(
+            text = title,
+            color = colors.textPrimary,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Text(
+            text = "$count",
+            color = colors.textSecondary,
+            fontSize = 11.sp
+        )
     }
 }
 
@@ -1285,7 +1420,7 @@ private fun StoriesTabContent(
     }
 
     LazyColumn(
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 110.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
         modifier = Modifier.fillMaxSize()
     ) {
@@ -1485,7 +1620,7 @@ private fun MenuTabContent(
     val colors = LocalOneUIColors.current
 
     LazyColumn(
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 110.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
         modifier = Modifier.fillMaxSize()
     ) {
@@ -1582,14 +1717,14 @@ private fun MenuTabContent(
             OneUISectionCard {
                 Column(modifier = Modifier.padding(20.dp)) {
                     Text(
-                        text = "Galeria One UI",
+                        text = "Galeria One UI 7 / 8",
                         color = colors.textPrimary,
                         fontSize = 16.sp,
                         fontWeight = FontWeight.SemiBold
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "Inspirada na Samsung One UI 6/7 para Moto G15 e BlueStacks. Grade edge-to-edge com barra Anos/Meses/Dias, filmstrip no visualizador e editor integrado.",
+                        text = "Interface inspirada na Samsung One UI 7/8 com barra flutuante em cápsula, cartões empilhados, deslize para cima com EXIF + histograma, remasterização instantânea e editor integrado.",
                         color = colors.textSecondary,
                         fontSize = 13.sp,
                         lineHeight = 18.sp
@@ -1646,31 +1781,42 @@ private fun OneUIMenuRow(
 }
 
 /**
- * Authentic Samsung Gallery One UI Bottom Bar:
- * 3 text-first tabs ("Imagens", "Álbuns", "Histórias") with active underline pill + right-aligned Menu icon.
+ * Samsung One UI 7 / 8 Floating Capsule Bottom Navigation Bar:
+ * Rounded floating pill container with [Fotos | Álbuns | Histórias] + [🔍] + [☰]
  */
 @Composable
-private fun OneUIGalleryBottomBar(
+private fun OneUIFloatingCapsuleBottomBar(
     currentTab: GalleryTab,
-    onSelectTab: (GalleryTab) -> Unit
+    isSearchOpen: Boolean,
+    onSelectTab: (GalleryTab) -> Unit,
+    onToggleSearch: () -> Unit
 ) {
     val colors = LocalOneUIColors.current
     val mainTabs = listOf(GalleryTab.PICTURES, GalleryTab.ALBUMS, GalleryTab.STORIES)
 
-    Surface(
-        color = colors.bottomBar,
-        tonalElevation = 0.dp,
-        modifier = Modifier.fillMaxWidth()
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .navigationBarsPadding()
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        contentAlignment = Alignment.Center
     ) {
-        Column {
-            HorizontalDivider(color = colors.divider, thickness = 0.5.dp)
+        Surface(
+            shape = RoundedCornerShape(34.dp),
+            color = colors.floatingPill,
+            shadowElevation = 10.dp,
+            tonalElevation = 0.dp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(56.dp)
+                .border(0.7.dp, colors.floatingBorder, RoundedCornerShape(34.dp))
+        ) {
             Row(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .navigationBarsPadding()
-                    .height(54.dp)
-                    .padding(horizontal = 16.dp),
-                verticalAlignment = Alignment.CenterVertically
+                    .fillMaxSize()
+                    .padding(horizontal = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Row(
                     modifier = Modifier.weight(1f),
@@ -1679,39 +1825,54 @@ private fun OneUIGalleryBottomBar(
                 ) {
                     mainTabs.forEach { tab ->
                         val selected = tab == currentTab
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Center,
+                        Box(
+                            contentAlignment = Alignment.Center,
                             modifier = Modifier
-                                .clip(RoundedCornerShape(14.dp))
+                                .clip(RoundedCornerShape(24.dp))
+                                .background(
+                                    if (selected) colors.surfaceElevated else Color.Transparent
+                                )
                                 .clickable { onSelectTab(tab) }
-                                .padding(horizontal = 14.dp, vertical = 6.dp)
+                                .padding(horizontal = 14.dp, vertical = 9.dp)
                         ) {
                             Text(
                                 text = tab.label,
                                 color = if (selected) colors.textPrimary else colors.textSecondary,
-                                fontSize = 15.sp,
+                                fontSize = 14.sp,
                                 fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
                                 maxLines = 1
-                            )
-                            Spacer(modifier = Modifier.height(3.dp))
-                            Box(
-                                modifier = Modifier
-                                    .width(if (selected) 24.dp else 0.dp)
-                                    .height(2.5.dp)
-                                    .clip(RoundedCornerShape(2.dp))
-                                    .background(if (selected) colors.textPrimary else Color.Transparent)
                             )
                         }
                     }
                 }
 
-                IconButton(onClick = { onSelectTab(GalleryTab.MENU) }) {
+                IconButton(
+                    onClick = onToggleSearch,
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background(if (isSearchOpen) colors.surfaceElevated else Color.Transparent)
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Search,
+                        contentDescription = "Pesquisar",
+                        tint = if (isSearchOpen) colors.primaryBlue else colors.textPrimary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+
+                IconButton(
+                    onClick = { onSelectTab(GalleryTab.MENU) },
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background(if (currentTab == GalleryTab.MENU) colors.surfaceElevated else Color.Transparent)
+                ) {
                     Icon(
                         imageVector = Icons.Rounded.Menu,
                         contentDescription = "Menu",
                         tint = if (currentTab == GalleryTab.MENU) colors.primaryBlue else colors.textPrimary,
-                        modifier = Modifier.size(23.dp)
+                        modifier = Modifier.size(20.dp)
                     )
                 }
             }

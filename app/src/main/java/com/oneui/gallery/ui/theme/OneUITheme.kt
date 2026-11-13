@@ -54,8 +54,10 @@ data class OneUIColorPalette(
     val surfaceElevated: Color,
     val popupMenu: Color,
     val floatingPill: Color,
+    val floatingBorder: Color,
     val primaryBlue: Color,
     val galleryRose: Color,
+    val aiAccent: Color,
     val textPrimary: Color,
     val textSecondary: Color,
     val divider: Color,
@@ -67,11 +69,13 @@ val DarkOneUIColors = OneUIColorPalette(
     isDark = true,
     background = Color(0xFF000000),
     surfaceCard = Color(0xFF17171A),
-    surfaceElevated = Color(0xFF242429),
-    popupMenu = Color(0xFF26262B),
-    floatingPill = Color(0xE6222226),
+    surfaceElevated = Color(0xFF28282E),
+    popupMenu = Color(0xFF25252B),
+    floatingPill = Color(0xE81C1C21),
+    floatingBorder = Color(0x2EFFFFFF),
     primaryBlue = Color(0xFF387AFF),
     galleryRose = Color(0xFFF53855),
+    aiAccent = Color(0xFF7B61FF),
     textPrimary = Color(0xFFFAFAFC),
     textSecondary = Color(0xFF8E8E93),
     divider = Color(0xFF2C2C2E),
@@ -83,11 +87,13 @@ val LightOneUIColors = OneUIColorPalette(
     isDark = false,
     background = Color(0xFFF6F6F8),
     surfaceCard = Color(0xFFFFFFFF),
-    surfaceElevated = Color(0xFFEBEBF0),
+    surfaceElevated = Color(0xFFE9E9F0),
     popupMenu = Color(0xFFFCFCFE),
-    floatingPill = Color(0xEBEEEEF2),
+    floatingPill = Color(0xF0FFFFFF),
+    floatingBorder = Color(0x1C000000),
     primaryBlue = Color(0xFF0072DE),
     galleryRose = Color(0xFFF53855),
+    aiAccent = Color(0xFF6B4EFF),
     textPrimary = Color(0xFF0F0F12),
     textSecondary = Color(0xFF6E6E73),
     divider = Color(0xFFE2E2E8),
@@ -139,7 +145,7 @@ fun OneUITheme(
             val window = (view.context as? Activity)?.window
             if (window != null) {
                 window.statusBarColor = palette.background.toArgb()
-                window.navigationBarColor = palette.bottomBar.toArgb()
+                window.navigationBarColor = palette.background.toArgb()
                 WindowCompat.getInsetsController(window, view).apply {
                     isAppearanceLightStatusBars = !darkTheme
                     isAppearanceLightNavigationBars = !darkTheme
@@ -157,9 +163,10 @@ fun OneUITheme(
 }
 
 /**
- * Samsung One UI 6/7 Ergonomic Collapsing Header Scaffold.
- * Displays a generous Viewing Area at the top (~168.dp) with centered light title (34.sp)
- * and subtitle, smoothly collapsing on scroll into a sleek 56.dp One UI action bar.
+ * Samsung One UI 7 / 8 Ergonomic Collapsing Header Scaffold.
+ * Displays a spacious Viewing Area at the top (~160.dp) with centered title (34.sp)
+ * and subtitle pill badge, collapsing smoothly into a sleek 56.dp toolbar, while
+ * allowing the floating One UI 7/8 bottom capsule to float above scrolling content.
  */
 @Composable
 fun OneUICollapsingScaffold(
@@ -173,7 +180,7 @@ fun OneUICollapsingScaffold(
 ) {
     val colors = LocalOneUIColors.current
     val density = LocalDensity.current
-    val maxExpandPx = with(density) { 164.dp.toPx() }
+    val maxExpandPx = with(density) { 158.dp.toPx() }
     var collapseOffsetPx by remember(title) { mutableFloatStateOf(0f) }
 
     val nestedScrollConnection = remember(maxExpandPx) {
@@ -212,98 +219,113 @@ fun OneUICollapsingScaffold(
         ((maxExpandPx * (1f - collapseFraction)).roundToInt()).toDp()
     }
 
-    Column(
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .background(colors.background)
             .statusBarsPadding()
             .nestedScroll(nestedScrollConnection)
     ) {
-        // Viewing Area (One UI 32% top reachability region)
-        if (expandedHeightDp > 1.dp) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(expandedHeightDp)
-                    .padding(horizontal = 24.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                val expandedAlpha = (1f - collapseFraction * 1.45f).coerceIn(0f, 1f)
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center,
-                    modifier = Modifier.alpha(expandedAlpha)
+        Column(modifier = Modifier.fillMaxSize()) {
+            // Viewing Area (One UI 7/8 Top Reachability Region)
+            if (expandedHeightDp > 1.dp) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(expandedHeightDp)
+                        .padding(horizontal = 24.dp),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Text(
-                        text = title,
-                        fontSize = 34.sp,
-                        fontWeight = FontWeight.Light,
-                        letterSpacing = (-0.5).sp,
-                        color = colors.textPrimary,
-                        textAlign = TextAlign.Center,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    if (!subtitle.isNullOrBlank()) {
-                        Spacer(modifier = Modifier.height(6.dp))
+                    val expandedAlpha = (1f - collapseFraction * 1.45f).coerceIn(0f, 1f)
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                        modifier = Modifier.alpha(expandedAlpha)
+                    ) {
                         Text(
-                            text = subtitle,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Normal,
-                            color = colors.textSecondary,
+                            text = title,
+                            fontSize = 34.sp,
+                            fontWeight = FontWeight.Light,
+                            letterSpacing = (-0.5).sp,
+                            color = colors.textPrimary,
                             textAlign = TextAlign.Center,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
+                        if (!subtitle.isNullOrBlank()) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Surface(
+                                shape = RoundedCornerShape(14.dp),
+                                color = colors.surfaceCard
+                            ) {
+                                Text(
+                                    text = subtitle,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = colors.textSecondary,
+                                    textAlign = TextAlign.Center,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
                     }
                 }
             }
-        }
 
-        // Compact Interaction Action Bar (56.dp)
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(56.dp)
-                .padding(horizontal = 10.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            if (navigationIcon != null) {
-                navigationIcon()
+            // Compact Interaction Action Bar (56.dp)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(54.dp)
+                    .padding(horizontal = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (navigationIcon != null) {
+                    navigationIcon()
+                }
+                val collapsedTitleAlpha = ((collapseFraction - 0.35f) * 1.54f).coerceIn(0f, 1f)
+                Text(
+                    text = title,
+                    fontSize = 21.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = colors.textPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(start = if (navigationIcon != null) 4.dp else 12.dp)
+                        .alpha(collapsedTitleAlpha)
+                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                    content = actions
+                )
             }
-            val collapsedTitleAlpha = ((collapseFraction - 0.35f) * 1.54f).coerceIn(0f, 1f)
-            Text(
-                text = title,
-                fontSize = 21.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = colors.textPrimary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+
+            if (headerExtra != null) {
+                headerExtra()
+            }
+
+            Box(
                 modifier = Modifier
                     .weight(1f)
-                    .padding(start = if (navigationIcon != null) 4.dp else 12.dp)
-                    .alpha(collapsedTitleAlpha)
-            )
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(2.dp),
-                content = actions
-            )
+                    .fillMaxWidth()
+            ) {
+                content()
+            }
         }
 
-        if (headerExtra != null) {
-            headerExtra()
-        }
-
+        // Floating Bottom Bar overlaid at the bottom
         Box(
             modifier = Modifier
-                .weight(1f)
+                .align(Alignment.BottomCenter)
                 .fillMaxWidth()
         ) {
-            content()
+            bottomBar()
         }
-
-        bottomBar()
     }
 }
 
