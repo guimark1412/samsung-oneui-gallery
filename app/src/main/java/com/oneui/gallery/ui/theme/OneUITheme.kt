@@ -1,7 +1,9 @@
 package com.oneui.gallery.ui.theme
 
 import android.app.Activity
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -33,6 +35,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
@@ -67,43 +70,43 @@ data class OneUIColorPalette(
 
 val DarkOneUIColors = OneUIColorPalette(
     isDark = true,
-    background = Color(0xFF000000),
-    surfaceCard = Color(0xFF17171A),
-    surfaceElevated = Color(0xFF28282E),
-    popupMenu = Color(0xFF25252B),
-    floatingPill = Color(0xE81C1C21),
-    floatingBorder = Color(0x2EFFFFFF),
-    primaryBlue = Color(0xFF387AFF),
+    background = Color(0xFF050507),
+    surfaceCard = Color(0xFF131419),
+    surfaceElevated = Color(0xFF1F2129),
+    popupMenu = Color(0xFF1E2028),
+    floatingPill = Color(0xEB171820),
+    floatingBorder = Color(0x26FFFFFF),
+    primaryBlue = Color(0xFF4785FF),
     galleryRose = Color(0xFFF53855),
-    aiAccent = Color(0xFF7B61FF),
-    textPrimary = Color(0xFFFAFAFC),
-    textSecondary = Color(0xFF8E8E93),
-    divider = Color(0xFF2C2C2E),
-    bottomBar = Color(0xEB0B0B0D),
-    selectionScrim = Color(0x38387AFF)
+    aiAccent = Color(0xFF4785FF),
+    textPrimary = Color(0xFFF9FAFC),
+    textSecondary = Color(0xFF91949F),
+    divider = Color(0xFF272933),
+    bottomBar = Color(0xEB0A0B0F),
+    selectionScrim = Color(0x384785FF)
 )
 
 val LightOneUIColors = OneUIColorPalette(
     isDark = false,
-    background = Color(0xFFF6F6F8),
+    background = Color(0xFFF4F5F8),
     surfaceCard = Color(0xFFFFFFFF),
-    surfaceElevated = Color(0xFFE9E9F0),
+    surfaceElevated = Color(0xFFE7E9F0),
     popupMenu = Color(0xFFFCFCFE),
     floatingPill = Color(0xF0FFFFFF),
-    floatingBorder = Color(0x1C000000),
+    floatingBorder = Color(0x18000000),
     primaryBlue = Color(0xFF0072DE),
     galleryRose = Color(0xFFF53855),
-    aiAccent = Color(0xFF6B4EFF),
-    textPrimary = Color(0xFF0F0F12),
-    textSecondary = Color(0xFF6E6E73),
-    divider = Color(0xFFE2E2E8),
-    bottomBar = Color(0xEBFAFAFC),
+    aiAccent = Color(0xFF0072DE),
+    textPrimary = Color(0xFF0F1014),
+    textSecondary = Color(0xFF6B6F7B),
+    divider = Color(0xFFE2E4EC),
+    bottomBar = Color(0xEBFAFBFD),
     selectionScrim = Color(0x300072DE)
 )
 
 val LocalOneUIColors = staticCompositionLocalOf { DarkOneUIColors }
 
-val OneUIShapeLarge = RoundedCornerShape(26.dp)
+val OneUIShapeLarge = RoundedCornerShape(28.dp)
 val OneUIShapeMenu = RoundedCornerShape(22.dp)
 val OneUIShapeMedium = RoundedCornerShape(20.dp)
 val OneUIShapeSmall = RoundedCornerShape(10.dp)
@@ -213,6 +216,10 @@ fun OneUICollapsingScaffold(
 
     val collapseFraction by animateFloatAsState(
         targetValue = (collapseOffsetPx / maxExpandPx).coerceIn(0f, 1f),
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioNoBouncy,
+            stiffness = Spring.StiffnessMediumLow
+        ),
         label = "oneui_collapse"
     )
     val expandedHeightDp = with(density) {
@@ -227,7 +234,7 @@ fun OneUICollapsingScaffold(
             .nestedScroll(nestedScrollConnection)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // Viewing Area (One UI 7/8 Top Reachability Region)
+            // Viewing Area (One UI Top Reachability Region)
             if (expandedHeightDp > 1.dp) {
                 Box(
                     modifier = Modifier
@@ -237,10 +244,16 @@ fun OneUICollapsingScaffold(
                     contentAlignment = Alignment.Center
                 ) {
                     val expandedAlpha = (1f - collapseFraction * 1.45f).coerceIn(0f, 1f)
+                    val titleScale = 1f - collapseFraction * 0.12f
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center,
-                        modifier = Modifier.alpha(expandedAlpha)
+                        modifier = Modifier
+                            .alpha(expandedAlpha)
+                            .graphicsLayer {
+                                scaleX = titleScale
+                                scaleY = titleScale
+                            }
                     ) {
                         Text(
                             text = title,

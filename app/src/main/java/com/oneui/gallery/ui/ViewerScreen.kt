@@ -6,7 +6,9 @@ import android.text.format.Formatter
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -138,8 +140,7 @@ fun ViewerScreen(
     onEdit: (MediaItem) -> Unit,
     onShare: (MediaItem) -> Unit,
     onTrashOrRestore: (MediaItem) -> Unit,
-    onPermanentDelete: (MediaItem) -> Unit,
-    onRemastered: () -> Unit = {}
+    onPermanentDelete: (MediaItem) -> Unit
 ) {
     val context = LocalContext.current
     val colors = LocalOneUIColors.current
@@ -157,21 +158,14 @@ fun ViewerScreen(
     var showControls by remember { mutableStateOf(true) }
     var isInfoExpanded by remember { mutableStateOf(false) }
     var showPermanentDeleteDialog by remember { mutableStateOf(false) }
-    var isRemastering by remember { mutableStateOf(false) }
-    var showRemasterCompare by remember { mutableStateOf(false) }
-    var remasterSplit by remember { mutableFloatStateOf(0.5f) }
     var activeZoomScale by remember { mutableFloatStateOf(1f) }
 
-    BackHandler(enabled = showRemasterCompare) {
-        showRemasterCompare = false
-    }
-    BackHandler(enabled = isInfoExpanded && !showRemasterCompare) {
+    BackHandler(enabled = isInfoExpanded) {
         isInfoExpanded = false
     }
 
     LaunchedEffect(pagerState.currentPage) {
         activeZoomScale = 1f
-        showRemasterCompare = false
         runCatching {
             filmstripState.animateScrollToItem((pagerState.currentPage - 2).coerceAtLeast(0))
         }
@@ -191,8 +185,16 @@ fun ViewerScreen(
     val dateFmt = remember { SimpleDateFormat("d 'de' MMMM • HH:mm", Locale("pt", "BR")) }
     val fullDateFmt = remember { SimpleDateFormat("EEEE, d 'de' MMMM 'de' yyyy • HH:mm", Locale("pt", "BR")) }
 
-    val previewPaddingH by animateDpAsState(if (isInfoExpanded) 20.dp else 0.dp, label = "viewer_pad_h")
-    val previewCorner by animateDpAsState(if (isInfoExpanded) 24.dp else 0.dp, label = "viewer_corner")
+    val previewPaddingH by animateDpAsState(
+        targetValue = if (isInfoExpanded) 20.dp else 0.dp,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMediumLow),
+        label = "viewer_pad_h"
+    )
+    val previewCorner by animateDpAsState(
+        targetValue = if (isInfoExpanded) 24.dp else 0.dp,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMediumLow),
+        label = "viewer_corner"
+    )
 
     Box(modifier = Modifier.fillMaxSize()) {
     Column(
@@ -650,57 +652,13 @@ fun ViewerScreen(
                             .padding(horizontal = 18.dp, vertical = 6.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        // One UI 7 / 8 Galaxy AI Quick Action Pills
+                        // Quick Action Pills
                         if (!isTrashMode) {
                             LazyRow(
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 if (!currentItem.isVideo) {
-                                    item {
-                                        Surface(
-                                            onClick = {
-                                                if (!isRemastering) {
-                                                    remasterSplit = 0.5f
-                                                    showRemasterCompare = true
-                                                }
-                                            },
-                                            shape = RoundedCornerShape(22.dp),
-                                            color = colors.aiAccent.copy(alpha = 0.18f),
-                                            modifier = Modifier.border(
-                                                0.8.dp,
-                                                colors.aiAccent.copy(alpha = 0.5f),
-                                                RoundedCornerShape(22.dp)
-                                            )
-                                        ) {
-                                            Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp)
-                                            ) {
-                                                if (isRemastering) {
-                                                    CircularProgressIndicator(
-                                                        color = colors.aiAccent,
-                                                        strokeWidth = 2.dp,
-                                                        modifier = Modifier.size(15.dp)
-                                                    )
-                                                } else {
-                                                    Icon(
-                                                        imageVector = Icons.Rounded.AutoAwesome,
-                                                        contentDescription = null,
-                                                        tint = colors.aiAccent,
-                                                        modifier = Modifier.size(16.dp)
-                                                    )
-                                                }
-                                                Spacer(modifier = Modifier.width(6.dp))
-                                                Text(
-                                                    text = if (isRemastering) "Remasterizando..." else "Remasterizar",
-                                                    color = colors.textPrimary,
-                                                    fontSize = 13.sp,
-                                                    fontWeight = FontWeight.SemiBold
-                                                )
-                                            }
-                                        }
-                                    }
                                     item {
                                         InfoActionPill(
                                             icon = Icons.Outlined.Edit,
@@ -813,15 +771,6 @@ fun ViewerScreen(
                                     accentBlue = colors.primaryBlue,
                                     accentRose = colors.galleryRose
                                 )
-                                if (realDiagnostics != null) {
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    Text(
-                                        text = realDiagnostics!!.summaryText,
-                                        color = colors.primaryBlue,
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Medium
-                                    )
-                                }
 
                                 HorizontalDivider(
                                     color = colors.divider,
@@ -843,258 +792,6 @@ fun ViewerScreen(
                         }
 
                         Spacer(modifier = Modifier.height(12.dp))
-                    }
-                }
-            }
-        }
-    }
-
-    if (showRemasterCompare && !currentItem.isVideo) {
-        var originalBmp by remember(currentItem.id) { mutableStateOf<Bitmap?>(null) }
-        var remasteredBmp by remember(currentItem.id) { mutableStateOf<Bitmap?>(null) }
-        var remasterDiag by remember(currentItem.id) { mutableStateOf<ImageDiagnostics?>(null) }
-
-        LaunchedEffect(currentItem.id, showRemasterCompare) {
-            if (remasteredBmp == null) {
-                val decoded = MediaRepository.decodeBitmapForEditing(context, currentItem.uri, 1280)
-                if (decoded != null) {
-                    originalBmp = decoded
-                    val (outBmp, diag) = PixelAiEngine.remasterBitmap(decoded)
-                    remasteredBmp = outBmp
-                    remasterDiag = diag
-                }
-            }
-        }
-
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Black)
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .statusBarsPadding()
-                    .navigationBarsPadding()
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(
-                        text = "Remasterização IA (Pixels Reais)",
-                        color = Color.White,
-                        fontSize = 17.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Surface(
-                        shape = RoundedCornerShape(14.dp),
-                        color = colors.primaryBlue.copy(alpha = 0.22f)
-                    ) {
-                        Text(
-                            text = "Arraste a linha",
-                            color = colors.primaryBlue,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-                        )
-                    }
-                }
-
-                BoxWithConstraints(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp)
-                        .clip(OneUIShapeLarge)
-                        .pointerInput(currentItem.id) {
-                            detectHorizontalDragGestures { _, dragAmount ->
-                                val widthPx = size.width.toFloat().coerceAtLeast(1f)
-                                remasterSplit = (remasterSplit + dragAmount / widthPx).coerceIn(0.06f, 0.94f)
-                            }
-                        }
-                ) {
-                    val splitClip = remember(remasterSplit) {
-                        GenericShape { size, _ ->
-                            addRect(Rect(0f, 0f, size.width * remasterSplit, size.height))
-                        }
-                    }
-
-                    val orig = originalBmp
-                    val rem = remasteredBmp
-                    if (orig != null && rem != null) {
-                        // Bottom layer: real pixel-remastered bitmap (right side)
-                        Image(
-                            bitmap = rem.asImageBitmap(),
-                            contentDescription = "Remasterizado IA",
-                            contentScale = ContentScale.Fit,
-                            modifier = Modifier.fillMaxSize()
-                        )
-
-                        // Top layer clipped to left side: Original pixels
-                        Image(
-                            bitmap = orig.asImageBitmap(),
-                            contentDescription = "Original",
-                            contentScale = ContentScale.Fit,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .clip(splitClip)
-                        )
-                    } else {
-                        Box(
-                            contentAlignment = Alignment.Center,
-                            modifier = Modifier.fillMaxSize()
-                        ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                CircularProgressIndicator(color = colors.primaryBlue)
-                                Spacer(modifier = Modifier.height(10.dp))
-                                Text(
-                                    text = "Analisando histograma e nitidez dos pixels...",
-                                    color = Color.White.copy(alpha = 0.8f),
-                                    fontSize = 13.sp
-                                )
-                            }
-                        }
-                    }
-
-                    // Badges
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = Color.Black.copy(alpha = 0.6f),
-                        modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .padding(14.dp)
-                    ) {
-                        Text(
-                            text = "Original",
-                            color = Color.White,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Medium,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-                        )
-                    }
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = colors.primaryBlue.copy(alpha = 0.85f),
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(14.dp)
-                    ) {
-                        Text(
-                            text = "Remasterizado IA",
-                            color = Color.White,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-                        )
-                    }
-
-                    if (remasterDiag?.remasterNotes?.isNotBlank() == true) {
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = Color.Black.copy(alpha = 0.68f),
-                            modifier = Modifier
-                                .align(Alignment.BottomCenter)
-                                .padding(bottom = 14.dp)
-                        ) {
-                            Text(
-                                text = remasterDiag!!.remasterNotes,
-                                color = Color.White,
-                                fontSize = 11.sp,
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-                            )
-                        }
-                    }
-
-                    // Vertical divider line + handle
-                    val splitOffsetDp = maxWidth * remasterSplit
-                    Box(
-                        modifier = Modifier
-                            .padding(start = (splitOffsetDp - 1.dp).coerceAtLeast(0.dp))
-                            .width(2.dp)
-                            .fillMaxSize()
-                            .background(Color.White.copy(alpha = 0.9f))
-                    )
-                    Surface(
-                        shape = CircleShape,
-                        color = Color.White,
-                        shadowElevation = 6.dp,
-                        modifier = Modifier
-                            .align(Alignment.CenterStart)
-                            .padding(start = (splitOffsetDp - 18.dp).coerceAtLeast(0.dp))
-                            .size(36.dp)
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Text(
-                                text = "⇆",
-                                color = Color.Black,
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
-                }
-
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 20.dp, vertical = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Surface(
-                        onClick = { showRemasterCompare = false },
-                        shape = RoundedCornerShape(24.dp),
-                        color = colors.surfaceElevated,
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Box(
-                            contentAlignment = Alignment.Center,
-                            modifier = Modifier.padding(vertical = 14.dp)
-                        ) {
-                            Text("Cancelar", color = colors.textPrimary, fontWeight = FontWeight.SemiBold)
-                        }
-                    }
-                    Surface(
-                        onClick = {
-                            val rem = remasteredBmp
-                            if (!isRemastering && rem != null) {
-                                isRemastering = true
-                                scope.launch {
-                                    val saved = MediaRepository.saveDirectBitmap(
-                                        context = context,
-                                        bitmap = rem,
-                                        prefix = "Remaster_IA"
-                                    )
-                                    isRemastering = false
-                                    showRemasterCompare = false
-                                    if (saved != null) {
-                                        Toast.makeText(
-                                            context,
-                                            "Remasterização real salva em Galeria Editadas!",
-                                            Toast.LENGTH_SHORT
-                                        ).show()
-                                        onRemastered()
-                                    }
-                                }
-                            }
-                        },
-                        shape = RoundedCornerShape(24.dp),
-                        color = if (remasteredBmp != null) colors.primaryBlue else colors.primaryBlue.copy(alpha = 0.4f),
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Box(
-                            contentAlignment = Alignment.Center,
-                            modifier = Modifier.padding(vertical = 14.dp)
-                        ) {
-                            Text(
-                                text = if (isRemastering) "Salvando..." else "Salvar cópia",
-                                color = Color.White,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        }
                     }
                 }
             }

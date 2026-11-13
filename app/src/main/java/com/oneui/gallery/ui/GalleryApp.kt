@@ -8,12 +8,22 @@ import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -129,7 +139,6 @@ import androidx.core.content.ContextCompat
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.oneui.gallery.data.MediaRepository
-import com.oneui.gallery.data.PixelAiEngine
 import com.oneui.gallery.model.AlbumItem
 import com.oneui.gallery.model.MediaItem
 import com.oneui.gallery.model.StoryItem
@@ -142,6 +151,10 @@ import com.oneui.gallery.ui.theme.OneUIShapeMenu
 import com.oneui.gallery.ui.theme.OneUITheme
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
 
 private enum class GalleryTab(val label: String) {
     PICTURES("Fotos"),
@@ -150,10 +163,74 @@ private enum class GalleryTab(val label: String) {
     MENU("Menu")
 }
 
-private enum class TimelineZoomMode(val label: String, val columns: Int, val showDateHeaders: Boolean) {
-    YEARS("Anos", 6, false),
-    MONTHS("Meses", 4, true),
-    DAYS("Dias", 3, true)
+private enum class TimelineScale(
+    val label: String,
+    val columns: Int,
+    val cornerDp: Int,
+    val spacingDp: Float
+) {
+    DAY("Por Dia", 3, 12, 4f),
+    WEEK("Por Semana", 4, 9, 3f),
+    MONTH("Por Mês", 5, 6, 2f),
+    YEAR("Por Ano", 6, 4, 1.5f)
+}
+
+private fun groupMediaByTimelineScale(
+    items: List<MediaItem>,
+    scale: TimelineScale
+): List<Pair<String, List<MediaItem>>> {
+    if (items.isEmpty()) return emptyList()
+    val ptBr = Locale("pt", "BR")
+    val now = Calendar.getInstance()
+    val curYear = now.get(Calendar.YEAR)
+    val curDayOfYear = now.get(Calendar.DAY_OF_YEAR)
+    val curWeek = now.get(Calendar.WEEK_OF_YEAR)
+
+    val daySameYearFmt = SimpleDateFormat("d 'de' MMMM", ptBr)
+    val dayOtherYearFmt = SimpleDateFormat("d 'de' MMM 'de' yyyy", ptBr)
+    val weekBoundFmt = SimpleDateFormat("d 'de' MMM", ptBr)
+    val monthFmt = SimpleDateFormat("MMMM 'de' yyyy", ptBr)
+
+    val groups = LinkedHashMap<String, MutableList<MediaItem>>()
+    val cal = Calendar.getInstance()
+    val weekStartCal = Calendar.getInstance()
+    val weekEndCal = Calendar.getInstance()
+
+    for (item in items) {
+        val ts = if (item.dateTaken > 0L) item.dateTaken else System.currentTimeMillis()
+        cal.timeInMillis = ts
+        val year = cal.get(Calendar.YEAR)
+        val dayOfYear = cal.get(Calendar.DAY_OF_YEAR)
+        val week = cal.get(Calendar.WEEK_OF_YEAR)
+
+        val key = when (scale) {
+            TimelineScale.DAY -> when {
+                year == curYear && dayOfYear == curDayOfYear -> "Hoje"
+                year == curYear && dayOfYear == curDayOfYear - 1 -> "Ontem"
+                year == curYear -> daySameYearFmt.format(Date(ts))
+                else -> dayOtherYearFmt.format(Date(ts))
+            }
+            TimelineScale.WEEK -> {
+                if (year == curYear && week == curWeek) {
+                    "Esta semana"
+                } else if (year == curYear && week == curWeek - 1) {
+                    "Semana passada"
+                } else {
+                    weekStartCal.timeInMillis = ts
+                    weekStartCal.set(Calendar.DAY_OF_WEEK, weekStartCal.firstDayOfWeek)
+                    weekEndCal.timeInMillis = weekStartCal.timeInMillis
+                    weekEndCal.add(Calendar.DAY_OF_YEAR, 6)
+                    val s = weekBoundFmt.format(weekStartCal.time)
+                    val e = weekBoundFmt.format(weekEndCal.time)
+                    "Semana de $s – $e"
+                }
+            }
+            TimelineScale.MONTH -> monthFmt.format(Date(ts)).replaceFirstChar { it.titlecase(ptBr) }
+            TimelineScale.YEAR -> year.toString()
+        }
+        groups.getOrPut(key) { mutableListOf() }.add(item)
+    }
+    return groups.entries.map { it.key to it.value }
 }
 
 private enum class AlbumFilter(val label: String) {
@@ -206,12 +283,10 @@ fun GalleryApp() {
     var isGeneratingSamples by remember { mutableStateOf(false) }
 
     var currentTab by remember { mutableStateOf(GalleryTab.PICTURES) }
-    var columnCount by remember { mutableIntStateOf(4) }
-    var showDateHeaders by remember { mutableStateOf(true) }
+    var timelineScale by remember { mutableStateOf(TimelineScale.WEEK) }
     var showSearch by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     var showOverflowMenu by remember { mutableStateOf(false) }
-    var showCreateMenu by remember { mutableStateOf(false) }
     var albumFilter by remember { mutableStateOf(AlbumFilter.ALL) }
 
     var selectionMode by remember { mutableStateOf(false) }
@@ -222,13 +297,10 @@ fun GalleryApp() {
     var editingItem by remember { mutableStateOf<MediaItem?>(null) }
     var editingCollageItems by remember { mutableStateOf<List<MediaItem>?>(null) }
     var activeStory by remember { mutableStateOf<StoryItem?>(null) }
-    var customStories by remember { mutableStateOf<List<StoryItem>>(emptyList()) }
 
     var showPinDialogMode by remember { mutableStateOf<String?>(null) } // "unlock_private" or "change_pin"
     var pinInput by remember { mutableStateOf("") }
     var pinError by remember { mutableStateOf<String?>(null) }
-    var showStoryAiDialog by remember { mutableStateOf(false) }
-    var storyPrompt by remember { mutableStateOf("") }
 
     fun refreshMedia() {
         if (!hasPermission) return
@@ -296,9 +368,7 @@ fun GalleryApp() {
         val privateItems = remember(allMedia) { allMedia.filter { !it.isTrashed && it.isPrivate } }
         val trashedItems = remember(allMedia) { allMedia.filter { it.isTrashed } }
         val albums = remember(activeItems) { MediaRepository.buildAlbums(activeItems) }
-        val stories = remember(activeItems, customStories) {
-            customStories + MediaRepository.buildStories(activeItems)
-        }
+        val stories = remember(activeItems) { MediaRepository.buildStories(activeItems) }
 
         fun openPrivateAlbum() {
             pinInput = ""
@@ -324,11 +394,10 @@ fun GalleryApp() {
         BackHandler(
             enabled = editingItem != null || editingCollageItems != null || viewerRequest != null ||
                 activeStory != null || collectionRoute != null || selectionMode || showSearch ||
-                showPinDialogMode != null || showStoryAiDialog
+                showPinDialogMode != null
         ) {
             when {
                 showPinDialogMode != null -> showPinDialogMode = null
-                showStoryAiDialog -> showStoryAiDialog = false
                 editingItem != null -> editingItem = null
                 editingCollageItems != null -> editingCollageItems = null
                 viewerRequest != null -> viewerRequest = null
@@ -444,8 +513,7 @@ fun GalleryApp() {
                             MediaRepository.deletePermanently(context, listOf(item))
                             refreshMedia()
                         }
-                    },
-                    onRemastered = { refreshMedia() }
+                    }
                 )
             }
             return@OneUITheme
@@ -560,9 +628,8 @@ fun GalleryApp() {
                 } else {
                     MediaGridContent(
                         items = routeItems,
-                        columnCount = columnCount,
-                        showDateHeaders = true,
-                        onColumnCountChange = { columnCount = it },
+                        timelineScale = timelineScale,
+                        onTimelineScaleChange = { timelineScale = it },
                         selectionMode = selectionMode,
                         selectedIds = selectedIds,
                         onToggleSelect = { id ->
@@ -589,10 +656,10 @@ fun GalleryApp() {
             else -> currentTab.label
         }
         val tabSubtitle = when (currentTab) {
-            GalleryTab.PICTURES -> "${displayedPictures.size} ${if (displayedPictures.size == 1) "foto" else "itens"} • ${albums.size} álbuns"
+            GalleryTab.PICTURES -> "${displayedPictures.size} ${if (displayedPictures.size == 1) "item" else "itens"} • ${timelineScale.label}"
             GalleryTab.ALBUMS -> "${albums.size} ${if (albums.size == 1) "álbum" else "álbuns"}"
             GalleryTab.STORIES -> "${stories.size} ${if (stories.size == 1) "história" else "histórias"}"
-            GalleryTab.MENU -> "One UI 8.5 • Studio & Privacidade"
+            GalleryTab.MENU -> "One UI • Estúdio & Privacidade"
         }
 
         OneUICollapsingScaffold(
@@ -630,45 +697,20 @@ fun GalleryApp() {
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.padding(end = 6.dp)
                     ) {
-                        // One UI 8.5 Create (+) Circular Glass Button
-                        Box {
-                            OneUICircularGlassAction(
-                                icon = Icons.Rounded.Add,
-                                description = "Criar colagem ou história",
-                                tint = colors.textPrimary,
-                                onClick = { showCreateMenu = true }
-                            )
-                            DropdownMenu(
-                                expanded = showCreateMenu,
-                                onDismissRequest = { showCreateMenu = false },
-                                modifier = Modifier
-                                    .background(colors.popupMenu, OneUIShapeMenu)
-                                    .clip(OneUIShapeMenu)
-                            ) {
-                                DropdownMenuItem(
-                                    text = { Text("Criar Colagem (Studio)", color = colors.textPrimary, fontSize = 15.sp) },
-                                    leadingIcon = { Icon(Icons.Rounded.Dashboard, null, tint = colors.primaryBlue) },
-                                    onClick = {
-                                        showCreateMenu = false
-                                        val photos = activeItems.filter { !it.isVideo }.take(4)
-                                        if (photos.size >= 2) {
-                                            editingCollageItems = photos
-                                        } else {
-                                            Toast.makeText(context, "Precisa de pelo menos 2 fotos na galeria", Toast.LENGTH_SHORT).show()
-                                        }
-                                    }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("Criar História com IA", color = colors.textPrimary, fontSize = 15.sp) },
-                                    leadingIcon = { Icon(Icons.Rounded.AutoAwesome, null, tint = Color(0xFFFF9F0A)) },
-                                    onClick = {
-                                        showCreateMenu = false
-                                        storyPrompt = ""
-                                        showStoryAiDialog = true
-                                    }
-                                )
+                        // Create Collage (+) Circular Glass Button
+                        OneUICircularGlassAction(
+                            icon = Icons.Rounded.Add,
+                            description = "Criar colagem",
+                            tint = colors.textPrimary,
+                            onClick = {
+                                val photos = activeItems.filter { !it.isVideo }.take(4)
+                                if (photos.size >= 2) {
+                                    editingCollageItems = photos
+                                } else {
+                                    Toast.makeText(context, "Precisa de pelo menos 2 fotos na galeria", Toast.LENGTH_SHORT).show()
+                                }
                             }
-                        }
+                        )
 
                         if (currentTab == GalleryTab.PICTURES) {
                             OneUICircularGlassAction(
@@ -682,7 +724,7 @@ fun GalleryApp() {
                             )
                         }
 
-                        // One UI 8.5 Overflow Menu (⋮)
+                        // Overflow Menu (⋮)
                         Box {
                             OneUICircularGlassAction(
                                 icon = Icons.Rounded.MoreVert,
@@ -709,26 +751,13 @@ fun GalleryApp() {
                                     )
                                     DropdownMenuItem(
                                         text = {
-                                            val nextCols = when (columnCount) {
-                                                3 -> 4
-                                                4 -> 5
-                                                5 -> 6
-                                                6 -> 2
-                                                else -> 3
-                                            }
-                                            Text("Colunas da grade ($columnCount → $nextCols)", color = colors.textPrimary, fontSize = 15.sp)
+                                            val nextScale = TimelineScale.entries[(timelineScale.ordinal + 1) % TimelineScale.entries.size]
+                                            Text("Visualização: ${nextScale.label}", color = colors.textPrimary, fontSize = 15.sp)
                                         },
                                         leadingIcon = { Icon(Icons.Outlined.GridView, null, tint = colors.textPrimary) },
                                         onClick = {
                                             showOverflowMenu = false
-                                            columnCount = when (columnCount) {
-                                                3 -> 4
-                                                4 -> 5
-                                                5 -> 6
-                                                6 -> 2
-                                                else -> 3
-                                            }
-                                            showDateHeaders = columnCount <= 5
+                                            timelineScale = TimelineScale.entries[(timelineScale.ordinal + 1) % TimelineScale.entries.size]
                                         }
                                     )
                                 }
@@ -877,7 +906,15 @@ fun GalleryApp() {
                 }
             }
         ) {
-            when (currentTab) {
+            AnimatedContent(
+                targetState = currentTab,
+                transitionSpec = {
+                    fadeIn(tween(220, easing = FastOutSlowInEasing)) togetherWith
+                        fadeOut(tween(150))
+                },
+                label = "main_tab_transition"
+            ) { activeTab ->
+            when (activeTab) {
                 GalleryTab.PICTURES -> {
                     when {
                         isLoading && activeItems.isEmpty() -> {
@@ -901,50 +938,24 @@ fun GalleryApp() {
                             )
                         }
                         else -> {
-                            Box(modifier = Modifier.fillMaxSize()) {
-                                MediaGridContent(
-                                    items = displayedPictures,
-                                    columnCount = columnCount,
-                                    showDateHeaders = showDateHeaders,
-                                    onColumnCountChange = { newCols ->
-                                        columnCount = newCols
-                                        showDateHeaders = newCols <= 5
-                                    },
-                                    selectionMode = selectionMode,
-                                    selectedIds = selectedIds,
-                                    onToggleSelect = { id ->
-                                        if (selectedIds.contains(id)) selectedIds.remove(id) else selectedIds.add(id)
-                                        if (selectedIds.isEmpty()) selectionMode = false
-                                    },
-                                    onEnterSelection = { id ->
-                                        selectionMode = true
-                                        if (!selectedIds.contains(id)) selectedIds.add(id)
-                                    },
-                                    onItemClick = { idx ->
-                                        viewerRequest = Triple(displayedPictures, idx, false)
-                                    }
-                                )
-
-                                // Samsung One UI Floating "Anos | Meses | Dias" Pill above floating capsule
-                                if (!selectionMode && displayedPictures.isNotEmpty()) {
-                                    val activeMode = when {
-                                        columnCount >= 6 -> TimelineZoomMode.YEARS
-                                        columnCount >= 4 -> TimelineZoomMode.MONTHS
-                                        else -> TimelineZoomMode.DAYS
-                                    }
-                                    OneUITimelineFloatingPill(
-                                        activeMode = activeMode,
-                                        onSelectMode = { mode ->
-                                            columnCount = mode.columns
-                                            showDateHeaders = mode.showDateHeaders
-                                        },
-                                        modifier = Modifier
-                                            .align(Alignment.BottomCenter)
-                                            .navigationBarsPadding()
-                                            .padding(bottom = 84.dp)
-                                    )
+                            MediaGridContent(
+                                items = displayedPictures,
+                                timelineScale = timelineScale,
+                                onTimelineScaleChange = { newScale -> timelineScale = newScale },
+                                selectionMode = selectionMode,
+                                selectedIds = selectedIds,
+                                onToggleSelect = { id ->
+                                    if (selectedIds.contains(id)) selectedIds.remove(id) else selectedIds.add(id)
+                                    if (selectedIds.isEmpty()) selectionMode = false
+                                },
+                                onEnterSelection = { id ->
+                                    selectionMode = true
+                                    if (!selectedIds.contains(id)) selectedIds.add(id)
+                                },
+                                onItemClick = { idx ->
+                                    viewerRequest = Triple(displayedPictures, idx, false)
                                 }
-                            }
+                            )
                         }
                     }
                 }
@@ -972,10 +983,6 @@ fun GalleryApp() {
                     StoriesTabContent(
                         stories = stories,
                         onPlayStory = { story -> activeStory = story },
-                        onCreateAiStory = {
-                            storyPrompt = ""
-                            showStoryAiDialog = true
-                        },
                         onGenerateSamples = { triggerSampleGeneration() },
                         isGenerating = isGeneratingSamples
                     )
@@ -1003,6 +1010,7 @@ fun GalleryApp() {
                         }
                     )
                 }
+            }
             }
         }
 
@@ -1089,87 +1097,6 @@ fun GalleryApp() {
                 }
             )
         }
-
-        if (showStoryAiDialog) {
-            AlertDialog(
-                onDismissRequest = { showStoryAiDialog = false },
-                containerColor = colors.surfaceCard,
-                shape = OneUIShapeMedium,
-                title = {
-                    Text("Criar História com IA", color = colors.textPrimary, fontWeight = FontWeight.SemiBold)
-                },
-                text = {
-                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Text(
-                            text = "Descreva o visual ou tema (ex: Pôr do sol, Noite, Azul, Natureza, P&B, Favoritos):",
-                            color = colors.textSecondary,
-                            fontSize = 13.sp
-                        )
-                        OutlinedTextField(
-                            value = storyPrompt,
-                            onValueChange = { storyPrompt = it },
-                            singleLine = true,
-                            placeholder = { Text("Ex: Pôr do sol quente ou Noite") },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
-                },
-                confirmButton = {
-                    TextButton(
-                        onClick = {
-                            val promptClean = storyPrompt.trim().ifBlank { "Destaques com IA" }
-                            showStoryAiDialog = false
-                            Toast.makeText(context, "Analisando pixels das fotos...", Toast.LENGTH_SHORT).show()
-                            scope.launch {
-                                val tokens = promptClean.lowercase().split(" ", ",", ".").filter { it.length >= 3 }
-                                val matchedList = mutableListOf<MediaItem>()
-                                for (item in activeItems.take(60)) {
-                                    val metaMatch = when {
-                                        "favorit" in promptClean.lowercase() -> item.isFavorite
-                                        "vídeo" in promptClean.lowercase() || "video" in promptClean.lowercase() -> item.isVideo
-                                        tokens.isEmpty() -> true
-                                        else -> tokens.any { t ->
-                                            item.name.contains(t, ignoreCase = true) ||
-                                                item.bucketName.contains(t, ignoreCase = true)
-                                        }
-                                    }
-                                    val visualMatch = if (!item.isVideo && !metaMatch && tokens.isNotEmpty()) {
-                                        PixelAiEngine.matchesVisualPrompt(context, item.uri, promptClean)
-                                    } else false
-
-                                    if (metaMatch || visualMatch) {
-                                        matchedList.add(item)
-                                        if (matchedList.size >= 10) break
-                                    }
-                                }
-                                val finalItems = matchedList.ifEmpty { activeItems.take(10) }
-                                if (finalItems.isNotEmpty()) {
-                                    val newStory = StoryItem(
-                                        id = "ai_story_${System.currentTimeMillis()}",
-                                        title = promptClean,
-                                        subtitle = "✨ Análise visual por pixels • ${finalItems.size} itens",
-                                        coverUri = finalItems.first().uri,
-                                        items = finalItems
-                                    )
-                                    customStories = listOf(newStory) + customStories
-                                    currentTab = GalleryTab.STORIES
-                                    activeStory = newStory
-                                } else {
-                                    Toast.makeText(context, "Nenhuma mídia encontrada para criar história.", Toast.LENGTH_SHORT).show()
-                                }
-                            }
-                        }
-                    ) {
-                        Text("Gerar", color = colors.primaryBlue, fontWeight = FontWeight.SemiBold)
-                    }
-                },
-                dismissButton = {
-                    TextButton(onClick = { showStoryAiDialog = false }) {
-                        Text("Cancelar", color = colors.textSecondary)
-                    }
-                }
-            )
-        }
     }
 }
 
@@ -1200,53 +1127,12 @@ private fun OneUICircularGlassAction(
     }
 }
 
-@Composable
-private fun OneUITimelineFloatingPill(
-    activeMode: TimelineZoomMode,
-    onSelectMode: (TimelineZoomMode) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val colors = LocalOneUIColors.current
-    Surface(
-        shape = RoundedCornerShape(24.dp),
-        color = colors.floatingPill,
-        tonalElevation = 0.dp,
-        shadowElevation = 6.dp,
-        modifier = modifier.border(0.6.dp, colors.floatingBorder, RoundedCornerShape(24.dp))
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 5.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(2.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            TimelineZoomMode.entries.forEach { mode ->
-                val selected = mode == activeMode
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(18.dp))
-                        .background(if (selected) colors.surfaceElevated else Color.Transparent)
-                        .clickable { onSelectMode(mode) }
-                        .padding(horizontal = 14.dp, vertical = 5.dp)
-                ) {
-                    Text(
-                        text = mode.label,
-                        color = if (selected) colors.textPrimary else colors.textSecondary,
-                        fontSize = 12.sp,
-                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
-                    )
-                }
-            }
-        }
-    }
-}
-
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun MediaGridContent(
     items: List<MediaItem>,
-    columnCount: Int,
-    showDateHeaders: Boolean,
-    onColumnCountChange: (Int) -> Unit,
+    timelineScale: TimelineScale,
+    onTimelineScaleChange: (TimelineScale) -> Unit,
     selectionMode: Boolean,
     selectedIds: List<Long>,
     onToggleSelect: (Long) -> Unit,
@@ -1254,103 +1140,156 @@ private fun MediaGridContent(
     onItemClick: (Int) -> Unit
 ) {
     val colors = LocalOneUIColors.current
-    val grouped = remember(items) { items.groupBy { it.dateGroupLabel } }
     val indexById = remember(items) {
         items.mapIndexed { index, item -> item.id to index }.toMap()
     }
-    var pinchAccumulator by remember { mutableFloatStateOf(1f) }
+    var livePinchFactor by remember { mutableFloatStateOf(1f) }
+    val visualScale by animateFloatAsState(
+        targetValue = (1f + (livePinchFactor - 1f) * 0.22f).coerceIn(0.88f, 1.14f),
+        animationSpec = spring(dampingRatio = 0.75f, stiffness = Spring.StiffnessMedium),
+        label = "pinch_live_scale"
+    )
 
-    LazyVerticalGrid(
-        columns = GridCells.Fixed(columnCount),
-        contentPadding = PaddingValues(top = 4.dp, bottom = 140.dp),
-        horizontalArrangement = Arrangement.spacedBy(1.5.dp),
-        verticalArrangement = Arrangement.spacedBy(1.5.dp),
+    Box(
         modifier = Modifier
             .fillMaxSize()
-            .pointerInput(columnCount) {
+            .pointerInput(timelineScale) {
                 awaitEachGesture {
                     awaitFirstDown(requireUnconsumed = false)
-                    do {
-                        val event = awaitPointerEvent()
-                        if (event.changes.count { it.pressed } >= 2) {
-                            val zoom = event.calculateZoom()
-                            if (zoom != 1f) {
-                                pinchAccumulator *= zoom
-                                if (pinchAccumulator > 1.24f && columnCount > 2) {
-                                    onColumnCountChange(columnCount - 1)
-                                    pinchAccumulator = 1f
-                                } else if (pinchAccumulator < 0.78f && columnCount < 6) {
-                                    onColumnCountChange(columnCount + 1)
-                                    pinchAccumulator = 1f
-                                }
-                                event.changes.forEach { if (it.positionChanged()) it.consume() }
-                            }
-                        } else {
-                            pinchAccumulator = 1f
-                        }
-                    } while (event.changes.any { it.pressed })
-                }
-            }
-    ) {
-        if (!showDateHeaders) {
-            items(items, key = { it.id }) { media ->
-                OneUIGridThumbnail(
-                    media = media,
-                    isSelected = selectedIds.contains(media.id),
-                    selectionMode = selectionMode,
-                    onClick = {
-                        if (selectionMode) onToggleSelect(media.id)
-                        else onItemClick(indexById[media.id] ?: 0)
-                    },
-                    onLongClick = { onEnterSelection(media.id) }
-                )
-            }
-        } else {
-            grouped.forEach { (dateLabel, groupItems) ->
-                item(span = { GridItemSpan(columnCount) }, key = "header_$dateLabel") {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(
-                            text = dateLabel,
-                            color = colors.textPrimary,
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        if (selectionMode) {
-                            val allGroupSelected = groupItems.all { selectedIds.contains(it.id) }
-                            Text(
-                                text = if (allGroupSelected) "Desmarcar" else "Selecionar dia",
-                                color = colors.primaryBlue,
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Medium,
-                                modifier = Modifier.clickable {
-                                    if (allGroupSelected) {
-                                        groupItems.forEach { if (selectedIds.contains(it.id)) onToggleSelect(it.id) }
-                                    } else {
-                                        groupItems.forEach { if (!selectedIds.contains(it.id)) onToggleSelect(it.id) }
+                    try {
+                        do {
+                            val event = awaitPointerEvent()
+                            if (event.changes.count { it.pressed } >= 2) {
+                                val zoom = event.calculateZoom()
+                                if (zoom != 1f) {
+                                    livePinchFactor = (livePinchFactor * zoom).coerceIn(0.65f, 1.45f)
+                                    if (livePinchFactor > 1.20f && timelineScale.ordinal > 0) {
+                                        onTimelineScaleChange(TimelineScale.entries[timelineScale.ordinal - 1])
+                                        livePinchFactor = 1f
+                                    } else if (livePinchFactor < 0.82f && timelineScale.ordinal < TimelineScale.entries.lastIndex) {
+                                        onTimelineScaleChange(TimelineScale.entries[timelineScale.ordinal + 1])
+                                        livePinchFactor = 1f
                                     }
+                                    event.changes.forEach { if (it.positionChanged()) it.consume() }
                                 }
-                            )
-                        }
+                            } else if (livePinchFactor != 1f) {
+                                livePinchFactor = 1f
+                            }
+                        } while (event.changes.any { it.pressed })
+                    } finally {
+                        livePinchFactor = 1f
                     }
                 }
+            }
+            .graphicsLayer {
+                scaleX = visualScale
+                scaleY = visualScale
+            }
+    ) {
+        AnimatedContent(
+            targetState = timelineScale,
+            transitionSpec = {
+                val zoomingIn = targetState.ordinal < initialState.ordinal
+                if (zoomingIn) {
+                    (fadeIn(tween(260, easing = FastOutSlowInEasing)) +
+                        scaleIn(initialScale = 0.90f, animationSpec = tween(260, easing = FastOutSlowInEasing))) togetherWith
+                        (fadeOut(tween(180)) +
+                            scaleOut(targetScale = 1.08f, animationSpec = tween(180)))
+                } else {
+                    (fadeIn(tween(260, easing = FastOutSlowInEasing)) +
+                        scaleIn(initialScale = 1.08f, animationSpec = tween(260, easing = FastOutSlowInEasing))) togetherWith
+                        (fadeOut(tween(180)) +
+                            scaleOut(targetScale = 0.90f, animationSpec = tween(180)))
+                }
+            },
+            label = "timeline_scale_transition"
+        ) { activeScale ->
+            val grouped = remember(items, activeScale) {
+                groupMediaByTimelineScale(items, activeScale)
+            }
+            val spacing = activeScale.spacingDp.dp
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(activeScale.columns),
+                contentPadding = PaddingValues(start = 6.dp, end = 6.dp, top = 6.dp, bottom = 112.dp),
+                horizontalArrangement = Arrangement.spacedBy(spacing),
+                verticalArrangement = Arrangement.spacedBy(spacing),
+                modifier = Modifier.fillMaxSize()
+            ) {
+                grouped.forEach { (dateLabel, groupItems) ->
+                    item(span = { GridItemSpan(activeScale.columns) }, key = "header_${activeScale.name}_$dateLabel") {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .animateItemPlacement(
+                                    spring(
+                                        dampingRatio = Spring.DampingRatioNoBouncy,
+                                        stiffness = Spring.StiffnessMediumLow
+                                    )
+                                )
+                                .padding(start = 10.dp, end = 10.dp, top = 16.dp, bottom = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = dateLabel,
+                                color = colors.textPrimary,
+                                fontSize = if (activeScale == TimelineScale.YEAR || activeScale == TimelineScale.MONTH) 18.sp else 15.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                            if (selectionMode) {
+                                val allGroupSelected = groupItems.all { selectedIds.contains(it.id) }
+                                Text(
+                                    text = if (allGroupSelected) "Desmarcar" else "Selecionar",
+                                    color = colors.primaryBlue,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    modifier = Modifier.clickable {
+                                        if (allGroupSelected) {
+                                            groupItems.forEach { if (selectedIds.contains(it.id)) onToggleSelect(it.id) }
+                                        } else {
+                                            groupItems.forEach { if (!selectedIds.contains(it.id)) onToggleSelect(it.id) }
+                                        }
+                                    }
+                                )
+                            } else {
+                                Surface(
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = colors.surfaceCard
+                                ) {
+                                    Text(
+                                        text = "${groupItems.size}",
+                                        color = colors.textSecondary,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
 
-                items(groupItems, key = { it.id }) { media ->
-                    OneUIGridThumbnail(
-                        media = media,
-                        isSelected = selectedIds.contains(media.id),
-                        selectionMode = selectionMode,
-                        onClick = {
-                            if (selectionMode) onToggleSelect(media.id)
-                            else onItemClick(indexById[media.id] ?: 0)
-                        },
-                        onLongClick = { onEnterSelection(media.id) }
-                    )
+                    items(groupItems, key = { it.id }) { media ->
+                        OneUIGridThumbnail(
+                            media = media,
+                            cornerDp = activeScale.cornerDp,
+                            isSelected = selectedIds.contains(media.id),
+                            selectionMode = selectionMode,
+                            onClick = {
+                                if (selectionMode) onToggleSelect(media.id)
+                                else onItemClick(indexById[media.id] ?: 0)
+                            },
+                            onLongClick = { onEnterSelection(media.id) },
+                            modifier = Modifier.animateItemPlacement(
+                                spring(
+                                    dampingRatio = Spring.DampingRatioNoBouncy,
+                                    stiffness = Spring.StiffnessMediumLow
+                                )
+                            )
+                        )
+                    }
                 }
             }
         }
@@ -1361,24 +1300,34 @@ private fun MediaGridContent(
 @Composable
 private fun OneUIGridThumbnail(
     media: MediaItem,
+    cornerDp: Int,
     isSelected: Boolean,
     selectionMode: Boolean,
     onClick: () -> Unit,
-    onLongClick: () -> Unit
+    onLongClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val colors = LocalOneUIColors.current
     val shrinkScale by animateFloatAsState(
-        targetValue = if (selectionMode && isSelected) 0.84f else 1f,
+        targetValue = if (selectionMode && isSelected) 0.86f else 1f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioNoBouncy,
+            stiffness = Spring.StiffnessMedium
+        ),
         label = "oneui_select_scale"
     )
     val cornerRadius by animateDpAsState(
-        targetValue = if (selectionMode && isSelected) 10.dp else 0.dp,
+        targetValue = if (selectionMode && isSelected) (cornerDp + 4).dp else cornerDp.dp,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioNoBouncy,
+            stiffness = Spring.StiffnessMedium
+        ),
         label = "oneui_select_corner"
     )
 
     Box(
-        modifier = Modifier
+        modifier = modifier
             .aspectRatio(1f)
             .background(colors.background)
             .combinedClickable(
@@ -1395,6 +1344,7 @@ private fun OneUIGridThumbnail(
                 }
                 .clip(RoundedCornerShape(cornerRadius))
                 .background(colors.surfaceCard)
+                .border(0.4.dp, colors.floatingBorder.copy(alpha = 0.35f), RoundedCornerShape(cornerRadius))
         ) {
             AsyncImage(
                 model = ImageRequest.Builder(context)
@@ -1789,7 +1739,6 @@ private fun OneUI8StackedCard(
 private fun StoriesTabContent(
     stories: List<StoryItem>,
     onPlayStory: (StoryItem) -> Unit,
-    onCreateAiStory: () -> Unit,
     onGenerateSamples: () -> Unit,
     isGenerating: Boolean
 ) {
@@ -1812,58 +1761,6 @@ private fun StoriesTabContent(
         verticalArrangement = Arrangement.spacedBy(16.dp),
         modifier = Modifier.fillMaxSize()
     ) {
-        item {
-            Surface(
-                onClick = onCreateAiStory,
-                shape = OneUIShapeLarge,
-                color = colors.surfaceCard,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .border(0.6.dp, colors.primaryBlue.copy(alpha = 0.4f), OneUIShapeLarge)
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 18.dp, vertical = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Surface(
-                        shape = CircleShape,
-                        color = colors.primaryBlue.copy(alpha = 0.16f),
-                        modifier = Modifier.size(40.dp)
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                imageVector = Icons.Rounded.AutoAwesome,
-                                contentDescription = null,
-                                tint = colors.primaryBlue,
-                                modifier = Modifier.size(22.dp)
-                            )
-                        }
-                    }
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Criar história com IA",
-                            color = colors.textPrimary,
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Text(
-                            text = "Descreva um tema ou filtro (ex: Favoritos, Editadas)",
-                            color = colors.textSecondary,
-                            fontSize = 12.sp
-                        )
-                    }
-                    Icon(
-                        imageVector = Icons.Rounded.ChevronRight,
-                        contentDescription = null,
-                        tint = colors.textSecondary
-                    )
-                }
-            }
-        }
-
         items(stories, key = { it.id }) { story ->
             Box(
                 modifier = Modifier
@@ -2189,14 +2086,14 @@ private fun MenuTabContent(
             OneUISectionCard {
                 Column(modifier = Modifier.padding(20.dp)) {
                     Text(
-                        text = "Galeria One UI 8.5",
+                        text = "Galeria One UI",
                         color = colors.textPrimary,
                         fontSize = 16.sp,
                         fontWeight = FontWeight.SemiBold
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "Interface inspirada na Samsung One UI 8.5 com Álbum Privado protegido por PIN, Estúdio de Colagens, comparação Antes/Depois de Remasterização IA, IA Assist por prompt e Histórias IA com movimento Ken Burns.",
+                        text = "Design moderno inspirado na Samsung One UI com pinça suave (Dia, Semana, Mês, Ano), Álbum Privado protegido por PIN, Estúdio de Colagens e Editor completo.",
                         color = colors.textSecondary,
                         fontSize = 13.sp,
                         lineHeight = 18.sp
@@ -2297,19 +2194,27 @@ private fun OneUIFloatingCapsuleBottomBar(
                 ) {
                     mainTabs.forEach { tab ->
                         val selected = tab == currentTab
+                        val pillBg by animateColorAsState(
+                            targetValue = if (selected) colors.surfaceElevated else Color.Transparent,
+                            animationSpec = tween(220, easing = FastOutSlowInEasing),
+                            label = "tab_pill_bg"
+                        )
+                        val tabTextColor by animateColorAsState(
+                            targetValue = if (selected) colors.textPrimary else colors.textSecondary,
+                            animationSpec = tween(220, easing = FastOutSlowInEasing),
+                            label = "tab_text_color"
+                        )
                         Box(
                             contentAlignment = Alignment.Center,
                             modifier = Modifier
                                 .clip(RoundedCornerShape(24.dp))
-                                .background(
-                                    if (selected) colors.surfaceElevated else Color.Transparent
-                                )
+                                .background(pillBg)
                                 .clickable { onSelectTab(tab) }
                                 .padding(horizontal = 14.dp, vertical = 9.dp)
                         ) {
                             Text(
                                 text = tab.label,
-                                color = if (selected) colors.textPrimary else colors.textSecondary,
+                                color = tabTextColor,
                                 fontSize = 14.sp,
                                 fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
                                 maxLines = 1
