@@ -54,6 +54,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -120,6 +121,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -127,6 +131,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -135,6 +141,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.toSize
+import androidx.compose.ui.zIndex
 import androidx.core.content.ContextCompat
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
@@ -1127,6 +1135,32 @@ private fun OneUICircularGlassAction(
     }
 }
 
+private class SlotRectHolder(var rect: Rect? = null)
+
+private class GridFlipTracker {
+    val currentBounds = HashMap<Long, Rect>()
+    val visualBounds = HashMap<Long, Rect>()
+    val previousBounds = HashMap<Long, Rect>()
+    var activeScale: TimelineScale? = null
+    var isZoomingOut: Boolean = false
+    var generation: Int = 0
+
+    fun onScaleSync(newScale: TimelineScale) {
+        val prev = activeScale
+        if (prev != null && prev != newScale) {
+            isZoomingOut = newScale.ordinal > prev.ordinal
+            previousBounds.clear()
+            if (visualBounds.isNotEmpty()) {
+                previousBounds.putAll(visualBounds)
+            } else {
+                previousBounds.putAll(currentBounds)
+            }
+            generation++
+        }
+        activeScale = newScale
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun MediaGridContent(
@@ -1140,15 +1174,46 @@ private fun MediaGridContent(
     onItemClick: (Int) -> Unit
 ) {
     val colors = LocalOneUIColors.current
+    val gridState = rememberLazyGridState()
     val indexById = remember(items) {
         items.mapIndexed { index, item -> item.id to index }.toMap()
     }
     var livePinchFactor by remember { mutableFloatStateOf(1f) }
-    val visualScale by animateFloatAsState(
-        targetValue = (1f + (livePinchFactor - 1f) * 0.22f).coerceIn(0.88f, 1.14f),
-        animationSpec = spring(dampingRatio = 0.75f, stiffness = Spring.StiffnessMedium),
+    val livePinchVisualScale by animateFloatAsState(
+        targetValue = (1f + (livePinchFactor - 1f) * 0.14f).coerceIn(0.90f, 1.10f),
+        animationSpec = spring(dampingRatio = 0.78f, stiffness = Spring.StiffnessMedium),
         label = "pinch_live_scale"
     )
+
+    val flipTracker = remember { GridFlipTracker() }
+    flipTracker.onScaleSync(timelineScale)
+
+    val flipAnim = remember(flipTracker.generation) {
+        Animatable(if (flipTracker.generation == 0) 1f else 0f)
+    }
+    LaunchedEffect(flipTracker.generation) {
+        if (flipTracker.generation > 0) {
+            flipAnim.animateTo(
+                targetValue = 1f,
+                animationSpec = spring(
+                    dampingRatio = 0.84f,
+                    stiffness = 300f
+                )
+            )
+        }
+    }
+
+    val spacing by animateDpAsState(
+        targetValue = timelineScale.spacingDp.dp,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioNoBouncy,
+            stiffness = Spring.StiffnessMediumLow
+        ),
+        label = "grid_spacing"
+    )
+    val grouped = remember(items, timelineScale) {
+        groupMediaByTimelineScale(items, timelineScale)
+    }
 
     Box(
         modifier = Modifier
@@ -1181,115 +1246,90 @@ private fun MediaGridContent(
                     }
                 }
             }
-            .graphicsLayer {
-                scaleX = visualScale
-                scaleY = visualScale
-            }
     ) {
-        AnimatedContent(
-            targetState = timelineScale,
-            transitionSpec = {
-                val zoomingIn = targetState.ordinal < initialState.ordinal
-                if (zoomingIn) {
-                    (fadeIn(tween(260, easing = FastOutSlowInEasing)) +
-                        scaleIn(initialScale = 0.90f, animationSpec = tween(260, easing = FastOutSlowInEasing))) togetherWith
-                        (fadeOut(tween(180)) +
-                            scaleOut(targetScale = 1.08f, animationSpec = tween(180)))
-                } else {
-                    (fadeIn(tween(260, easing = FastOutSlowInEasing)) +
-                        scaleIn(initialScale = 1.08f, animationSpec = tween(260, easing = FastOutSlowInEasing))) togetherWith
-                        (fadeOut(tween(180)) +
-                            scaleOut(targetScale = 0.90f, animationSpec = tween(180)))
-                }
-            },
-            label = "timeline_scale_transition"
-        ) { activeScale ->
-            val grouped = remember(items, activeScale) {
-                groupMediaByTimelineScale(items, activeScale)
-            }
-            val spacing = activeScale.spacingDp.dp
-            LazyVerticalGrid(
-                columns = GridCells.Fixed(activeScale.columns),
-                contentPadding = PaddingValues(start = 6.dp, end = 6.dp, top = 6.dp, bottom = 112.dp),
-                horizontalArrangement = Arrangement.spacedBy(spacing),
-                verticalArrangement = Arrangement.spacedBy(spacing),
-                modifier = Modifier.fillMaxSize()
-            ) {
-                grouped.forEach { (dateLabel, groupItems) ->
-                    item(span = { GridItemSpan(activeScale.columns) }, key = "header_${activeScale.name}_$dateLabel") {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .animateItemPlacement(
-                                    spring(
-                                        dampingRatio = Spring.DampingRatioNoBouncy,
-                                        stiffness = Spring.StiffnessMediumLow
-                                    )
-                                )
-                                .padding(start = 10.dp, end = 10.dp, top = 16.dp, bottom = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
+        LazyVerticalGrid(
+            state = gridState,
+            columns = GridCells.Fixed(timelineScale.columns),
+            contentPadding = PaddingValues(start = 6.dp, end = 6.dp, top = 6.dp, bottom = 112.dp),
+            horizontalArrangement = Arrangement.spacedBy(spacing),
+            verticalArrangement = Arrangement.spacedBy(spacing),
+            modifier = Modifier.fillMaxSize()
+        ) {
+            grouped.forEach { (dateLabel, groupItems) ->
+                item(
+                    span = { GridItemSpan(timelineScale.columns) },
+                    key = "header_${timelineScale.name}_$dateLabel"
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .zIndex(0f)
+                            .graphicsLayer {
+                                val p = flipAnim.value.coerceIn(0f, 1f)
+                                alpha = p
+                                translationY = (1f - p) * (if (flipTracker.isZoomingOut) 18f else -18f)
+                            }
+                            .padding(start = 10.dp, end = 10.dp, top = 16.dp, bottom = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = dateLabel,
+                            color = colors.textPrimary,
+                            fontSize = if (timelineScale == TimelineScale.YEAR || timelineScale == TimelineScale.MONTH) 18.sp else 15.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                        if (selectionMode) {
+                            val allGroupSelected = groupItems.all { selectedIds.contains(it.id) }
                             Text(
-                                text = dateLabel,
-                                color = colors.textPrimary,
-                                fontSize = if (activeScale == TimelineScale.YEAR || activeScale == TimelineScale.MONTH) 18.sp else 15.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f)
-                            )
-                            if (selectionMode) {
-                                val allGroupSelected = groupItems.all { selectedIds.contains(it.id) }
-                                Text(
-                                    text = if (allGroupSelected) "Desmarcar" else "Selecionar",
-                                    color = colors.primaryBlue,
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    modifier = Modifier.clickable {
-                                        if (allGroupSelected) {
-                                            groupItems.forEach { if (selectedIds.contains(it.id)) onToggleSelect(it.id) }
-                                        } else {
-                                            groupItems.forEach { if (!selectedIds.contains(it.id)) onToggleSelect(it.id) }
-                                        }
+                                text = if (allGroupSelected) "Desmarcar" else "Selecionar",
+                                color = colors.primaryBlue,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Medium,
+                                modifier = Modifier.clickable {
+                                    if (allGroupSelected) {
+                                        groupItems.forEach { if (selectedIds.contains(it.id)) onToggleSelect(it.id) }
+                                    } else {
+                                        groupItems.forEach { if (!selectedIds.contains(it.id)) onToggleSelect(it.id) }
                                     }
-                                )
-                            } else {
-                                Surface(
-                                    shape = RoundedCornerShape(10.dp),
-                                    color = colors.surfaceCard
-                                ) {
-                                    Text(
-                                        text = "${groupItems.size}",
-                                        color = colors.textSecondary,
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Medium,
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
-                                    )
                                 }
+                            )
+                        } else {
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = colors.surfaceCard
+                            ) {
+                                Text(
+                                    text = "${groupItems.size}",
+                                    color = colors.textSecondary,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                )
                             }
                         }
                     }
+                }
 
-                    items(groupItems, key = { it.id }) { media ->
-                        OneUIGridThumbnail(
-                            media = media,
-                            cornerDp = activeScale.cornerDp,
-                            isSelected = selectedIds.contains(media.id),
-                            selectionMode = selectionMode,
-                            onClick = {
-                                if (selectionMode) onToggleSelect(media.id)
-                                else onItemClick(indexById[media.id] ?: 0)
-                            },
-                            onLongClick = { onEnterSelection(media.id) },
-                            modifier = Modifier.animateItemPlacement(
-                                spring(
-                                    dampingRatio = Spring.DampingRatioNoBouncy,
-                                    stiffness = Spring.StiffnessMediumLow
-                                )
-                            )
-                        )
-                    }
+                items(groupItems, key = { it.id }) { media ->
+                    OneUIGridThumbnail(
+                        media = media,
+                        cornerDp = timelineScale.cornerDp,
+                        isSelected = selectedIds.contains(media.id),
+                        selectionMode = selectionMode,
+                        flipTracker = flipTracker,
+                        flipProgress = flipAnim.value,
+                        pinchScale = livePinchVisualScale,
+                        onClick = {
+                            if (selectionMode) onToggleSelect(media.id)
+                            else onItemClick(indexById[media.id] ?: 0)
+                        },
+                        onLongClick = { onEnterSelection(media.id) },
+                        modifier = Modifier.zIndex(1f)
+                    )
                 }
             }
         }
@@ -1303,12 +1343,17 @@ private fun OneUIGridThumbnail(
     cornerDp: Int,
     isSelected: Boolean,
     selectionMode: Boolean,
+    flipTracker: GridFlipTracker,
+    flipProgress: Float,
+    pinchScale: Float,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val colors = LocalOneUIColors.current
+    val slotRectHolder = remember(media.id) { SlotRectHolder() }
+
     val shrinkScale by animateFloatAsState(
         targetValue = if (selectionMode && isSelected) 0.86f else 1f,
         animationSpec = spring(
@@ -1329,7 +1374,16 @@ private fun OneUIGridThumbnail(
     Box(
         modifier = modifier
             .aspectRatio(1f)
-            .background(colors.background)
+            .onGloballyPositioned { coords ->
+                if (coords.isAttached) {
+                    val rect = Rect(coords.positionInRoot(), coords.size.toSize())
+                    slotRectHolder.rect = rect
+                    flipTracker.currentBounds[media.id] = rect
+                    if (flipProgress >= 0.999f) {
+                        flipTracker.visualBounds[media.id] = rect
+                    }
+                }
+            }
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = onLongClick
@@ -1339,8 +1393,50 @@ private fun OneUIGridThumbnail(
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer {
-                    scaleX = shrinkScale
-                    scaleY = shrinkScale
+                    val p = flipProgress.coerceIn(0f, 1f)
+                    val inv = 1f - p
+                    val newRect = slotRectHolder.rect
+                    val oldRect = flipTracker.previousBounds[media.id]
+
+                    if (newRect != null && newRect.width > 0f && newRect.height > 0f && inv > 0.001f) {
+                        if (oldRect != null) {
+                            val dx = (oldRect.center.x - newRect.center.x) * inv
+                            val dy = (oldRect.center.y - newRect.center.y) * inv
+                            val sx = 1f + ((oldRect.width / newRect.width) - 1f) * inv
+                            val sy = 1f + ((oldRect.height / newRect.height) - 1f) * inv
+                            translationX = dx
+                            translationY = dy
+                            scaleX = shrinkScale * pinchScale * sx
+                            scaleY = shrinkScale * pinchScale * sy
+                            alpha = 1f
+
+                            val curW = newRect.width * sx
+                            val curH = newRect.height * sy
+                            val curCx = newRect.center.x + dx
+                            val curCy = newRect.center.y + dy
+                            flipTracker.visualBounds[media.id] = Rect(
+                                offset = Offset(curCx - curW / 2f, curCy - curH / 2f),
+                                size = Size(curW, curH)
+                            )
+                        } else {
+                            val dy = (if (flipTracker.isZoomingOut) 160f else -100f) * inv
+                            val s = 1f + ((if (flipTracker.isZoomingOut) 1.22f else 0.82f) - 1f) * inv
+                            translationX = 0f
+                            translationY = dy
+                            scaleX = shrinkScale * pinchScale * s
+                            scaleY = shrinkScale * pinchScale * s
+                            alpha = (0.2f + 0.8f * p).coerceIn(0f, 1f)
+                        }
+                    } else {
+                        translationX = 0f
+                        translationY = 0f
+                        scaleX = shrinkScale * pinchScale
+                        scaleY = shrinkScale * pinchScale
+                        alpha = 1f
+                        if (newRect != null) {
+                            flipTracker.visualBounds[media.id] = newRect
+                        }
+                    }
                 }
                 .clip(RoundedCornerShape(cornerRadius))
                 .background(colors.surfaceCard)
@@ -1393,26 +1489,26 @@ private fun OneUIGridThumbnail(
                         .background(colors.selectionScrim)
                 )
             }
-        }
 
-        if (selectionMode) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(6.dp)
-                    .size(21.dp)
-                    .clip(CircleShape)
-                    .background(if (isSelected) colors.primaryBlue else Color(0x55000000))
-                    .border(1.5.dp, Color.White, CircleShape),
-                contentAlignment = Alignment.Center
-            ) {
-                if (isSelected) {
-                    Icon(
-                        imageVector = Icons.Rounded.Check,
-                        contentDescription = null,
-                        tint = Color.White,
-                        modifier = Modifier.size(13.dp)
-                    )
+            if (selectionMode) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(6.dp)
+                        .size(21.dp)
+                        .clip(CircleShape)
+                        .background(if (isSelected) colors.primaryBlue else Color(0x55000000))
+                        .border(1.5.dp, Color.White, CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (isSelected) {
+                        Icon(
+                            imageVector = Icons.Rounded.Check,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(13.dp)
+                        )
+                    }
                 }
             }
         }
