@@ -1,8 +1,10 @@
 package com.oneui.gallery.ui
 
+import android.graphics.Bitmap
 import android.net.Uri
 import android.widget.Toast
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -57,6 +59,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateListOf
@@ -76,6 +79,7 @@ import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -91,6 +95,7 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.oneui.gallery.data.MediaRepository
+import com.oneui.gallery.data.PixelAiEngine
 import com.oneui.gallery.model.BuiltInFilters
 import com.oneui.gallery.model.CropAspect
 import com.oneui.gallery.model.DrawStroke
@@ -147,9 +152,84 @@ fun EditorScreen(
     var aiPrompt by remember { mutableStateOf("") }
     var aiAppliedFeedback by remember { mutableStateOf<String?>(null) }
 
+    var originalBitmap by remember(item.uri) { mutableStateOf<Bitmap?>(null) }
+    var workingBitmap by remember(item.uri) { mutableStateOf<Bitmap?>(null) }
+    val bitmapHistory = remember(item.uri) { mutableStateListOf<Bitmap>() }
+    var isAiProcessing by remember { mutableStateOf(false) }
+    var isEraserMode by remember { mutableStateOf(false) }
+    var eraserPoints by remember { mutableStateOf<List<Offset>>(emptyList()) }
+
+    LaunchedEffect(item.uri) {
+        val loaded = MediaRepository.decodeBitmapForEditing(context, item.uri, 1280)
+        if (loaded != null) {
+            originalBitmap = loaded
+            workingBitmap = loaded
+        }
+    }
+
+    fun runPixelAi(op: suspend (Bitmap) -> Pair<Bitmap, String>) {
+        val base = workingBitmap
+        if (base == null || isAiProcessing) return
+        isAiProcessing = true
+        scope.launch {
+            val (nextBmp, msg) = op(base)
+            if (nextBmp !== base) {
+                bitmapHistory.add(base)
+                workingBitmap = nextBmp
+            }
+            isAiProcessing = false
+            aiAppliedFeedback = msg
+        }
+    }
+
     fun applyAiAssistStyle(query: String) {
         val q = query.lowercase()
         when {
+            "apagar" in q || "borracha" in q || "remover" in q || "inpaint" in q -> {
+                isEraserMode = true
+                aiAppliedFeedback = "Borracha IA ativa: passe o dedo sobre o objeto para apagar"
+            }
+            "bokeh" in q || "desfoc" in q || "fundo" in q || "retrato" in q -> {
+                isEraserMode = false
+                runPixelAi { bmp ->
+                    val out = PixelAiEngine.applyPortraitBokeh(bmp, 1f)
+                    out to "Retrato Bokeh real aplicado ao fundo (${out.width}×${out.height}px)"
+                }
+            }
+            "nitid" in q || "detalhe" in q || "sharpen" in q || "foco" in q -> {
+                isEraserMode = false
+                runPixelAi { bmp ->
+                    val out = PixelAiEngine.applyUnsharpMask(bmp, 0.9f)
+                    out to "Super Nitidez (Unsharp Mask) aplicada nos pixels"
+                }
+            }
+            "noite" in q || "noturn" in q || "escuro" in q || "clarear" in q || "sombr" in q -> {
+                isEraserMode = false
+                runPixelAi { bmp ->
+                    val out = PixelAiEngine.applyShadowRecovery(bmp, 0.72f)
+                    out to "Recuperação real de sombras noturnas aplicada"
+                }
+            }
+            "girar" in q || "rodar" in q -> {
+                rotationDegrees = (rotationDegrees + 90f) % 360f
+                aiAppliedFeedback = "Foto girada +90°"
+            }
+            "espelh" in q -> {
+                flipH = !flipH
+                aiAppliedFeedback = "Espelhamento horizontal aplicado"
+            }
+            "1:1" in q || "quadrad" in q -> {
+                cropAspect = CropAspect.SQUARE
+                aiAppliedFeedback = "Proporção 1:1 aplicada"
+            }
+            "4:5" in q -> {
+                cropAspect = CropAspect.FOUR_FIVE
+                aiAppliedFeedback = "Proporção 4:5 aplicada"
+            }
+            "9:16" in q || "story" in q -> {
+                cropAspect = CropAspect.NINE_SIXTEEN
+                aiAppliedFeedback = "Proporção 9:16 aplicada"
+            }
             "p&b" in q || "preto" in q || "branco" in q || "mono" in q || "b&w" in q -> {
                 selectedFilter = BuiltInFilters.presets.firstOrNull { it.id == "mono" } ?: BuiltInFilters.presets.first()
                 brightness = 0.02f
@@ -159,16 +239,7 @@ fun EditorScreen(
                 vignette = 0.28f
                 aiAppliedFeedback = "Estilo B&W Drama aplicado"
             }
-            "noite" in q || "noturn" in q || "escuro" in q || "clarear" in q -> {
-                selectedFilter = BuiltInFilters.presets.firstOrNull { it.id == "vivid" } ?: BuiltInFilters.presets.first()
-                brightness = 0.16f
-                contrast = 1.10f
-                saturation = 1.12f
-                warmth = 0.04f
-                vignette = 0f
-                aiAppliedFeedback = "Otimização Noturna IA aplicada"
-            }
-            "cinema" in q || "teal" in q || "filme" in q && "retr" !in q -> {
+            "cinema" in q || "teal" in q || ("filme" in q && "retr" !in q) -> {
                 selectedFilter = BuiltInFilters.presets.firstOrNull { it.id == "cool" } ?: BuiltInFilters.presets.first()
                 brightness = -0.02f
                 contrast = 1.20f
@@ -185,15 +256,6 @@ fun EditorScreen(
                 warmth = 0.22f
                 vignette = 0.30f
                 aiAppliedFeedback = "Tom Retrô Filme aplicado"
-            }
-            "retrato" in q || "suave" in q || "pele" in q -> {
-                selectedFilter = BuiltInFilters.presets.firstOrNull { it.id == "warm" } ?: BuiltInFilters.presets.first()
-                brightness = 0.06f
-                contrast = 0.98f
-                saturation = 1.05f
-                warmth = 0.14f
-                vignette = 0.14f
-                aiAppliedFeedback = "Retrato Suave IA aplicado"
             }
             "frio" in q || "azul" in q || "gelo" in q -> {
                 selectedFilter = BuiltInFilters.presets.firstOrNull { it.id == "cool" } ?: BuiltInFilters.presets.first()
@@ -214,14 +276,12 @@ fun EditorScreen(
                 aiAppliedFeedback = "Luz Dourada aplicada"
             }
             else -> {
-                // Default Galaxy AI HDR Vivid remaster
-                selectedFilter = BuiltInFilters.presets.firstOrNull { it.id == "vivid" } ?: BuiltInFilters.presets.first()
-                brightness = 0.05f
-                contrast = 1.16f
-                saturation = 1.22f
-                warmth = 0.06f
-                vignette = 0.10f
-                aiAppliedFeedback = "Brilho HDR Galaxy AI aplicado"
+                // Default: Real pixel-level Auto-Remaster (Auto-Levels + White Balance + Shadow Lift + Unsharp Mask)
+                isEraserMode = false
+                runPixelAi { bmp ->
+                    val (out, diag) = PixelAiEngine.remasterBitmap(bmp)
+                    out to (diag.remasterNotes.ifBlank { diag.summaryText })
+                }
             }
         }
     }
@@ -264,6 +324,12 @@ fun EditorScreen(
         overlayTexts.clear()
         aiPrompt = ""
         aiAppliedFeedback = null
+        isEraserMode = false
+        eraserPoints = emptyList()
+        if (originalBitmap != null) {
+            workingBitmap = originalBitmap
+        }
+        bitmapHistory.clear()
     }
 
     Column(
@@ -316,7 +382,8 @@ fun EditorScreen(
                             strokes = strokes.toList(),
                             overlayTexts = overlayTexts.toList(),
                             previewWidth = previewSize.width.toFloat(),
-                            previewHeight = previewSize.height.toFloat()
+                            previewHeight = previewSize.height.toFloat(),
+                            baseBitmap = workingBitmap
                         )
                         isSaving = false
                         if (savedUri != null) {
@@ -364,55 +431,150 @@ fun EditorScreen(
                     .clipToBounds()
                     .onSizeChanged { previewSize = it }
                     .then(
-                        if (activeTab == EditorTab.DRAW) {
-                            Modifier.pointerInput(brushColor, brushWidth) {
-                                detectDragGestures(
-                                    onDragStart = { startOffset ->
-                                        currentStrokePoints = listOf(startOffset)
-                                    },
-                                    onDrag = { change, _ ->
-                                        change.consume()
-                                        currentStrokePoints = currentStrokePoints + change.position
-                                    },
-                                    onDragEnd = {
-                                        if (currentStrokePoints.size >= 2) {
-                                            strokes.add(
-                                                DrawStroke(
-                                                    points = currentStrokePoints,
-                                                    color = brushColor,
-                                                    strokeWidth = brushWidth
+                        when {
+                            activeTab == EditorTab.DRAW -> {
+                                Modifier.pointerInput(brushColor, brushWidth) {
+                                    detectDragGestures(
+                                        onDragStart = { startOffset ->
+                                            currentStrokePoints = listOf(startOffset)
+                                        },
+                                        onDrag = { change, _ ->
+                                            change.consume()
+                                            currentStrokePoints = currentStrokePoints + change.position
+                                        },
+                                        onDragEnd = {
+                                            if (currentStrokePoints.size >= 2) {
+                                                strokes.add(
+                                                    DrawStroke(
+                                                        points = currentStrokePoints,
+                                                        color = brushColor,
+                                                        strokeWidth = brushWidth
+                                                    )
                                                 )
-                                            )
+                                            }
+                                            currentStrokePoints = emptyList()
+                                        },
+                                        onDragCancel = {
+                                            currentStrokePoints = emptyList()
                                         }
-                                        currentStrokePoints = emptyList()
-                                    },
-                                    onDragCancel = {
-                                        currentStrokePoints = emptyList()
-                                    }
-                                )
+                                    )
+                                }
                             }
-                        } else {
-                            Modifier
+                            activeTab == EditorTab.AI_ASSIST && isEraserMode && !isAiProcessing -> {
+                                Modifier.pointerInput(previewSize, workingBitmap) {
+                                    detectDragGestures(
+                                        onDragStart = { startOffset ->
+                                            eraserPoints = listOf(startOffset)
+                                        },
+                                        onDrag = { change, _ ->
+                                            change.consume()
+                                            eraserPoints = eraserPoints + change.position
+                                        },
+                                        onDragEnd = {
+                                            val pts = eraserPoints
+                                            eraserPoints = emptyList()
+                                            if (pts.isNotEmpty() && previewSize.width > 0 && previewSize.height > 0) {
+                                                runPixelAi { bmp ->
+                                                    val out = PixelAiEngine.inpaintStroke(
+                                                        source = bmp,
+                                                        strokePoints = pts,
+                                                        brushRadiusPx = 38f,
+                                                        previewWidth = previewSize.width.toFloat(),
+                                                        previewHeight = previewSize.height.toFloat()
+                                                    )
+                                                    out to "Objeto apagado por preenchimento de pixels!"
+                                                }
+                                            }
+                                        },
+                                        onDragCancel = {
+                                            eraserPoints = emptyList()
+                                        }
+                                    )
+                                }
+                            }
+                            else -> Modifier
                         }
                     ),
                 contentAlignment = Alignment.Center
             ) {
-                AsyncImage(
-                    model = ImageRequest.Builder(context)
-                        .data(item.uri)
-                        .crossfade(false)
-                        .build(),
-                    contentDescription = "Preview",
-                    contentScale = if (cropAspect.ratio != null) ContentScale.Crop else ContentScale.Fit,
-                    colorFilter = ColorFilter.colorMatrix(liveColorMatrix),
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .graphicsLayer {
-                            rotationZ = rotationDegrees
-                            scaleX = if (flipH) -1f else 1f
-                            scaleY = if (flipV) -1f else 1f
+                val activeBmp = workingBitmap
+                if (activeBmp != null) {
+                    Image(
+                        bitmap = activeBmp.asImageBitmap(),
+                        contentDescription = "Preview",
+                        contentScale = if (cropAspect.ratio != null) ContentScale.Crop else ContentScale.Fit,
+                        colorFilter = ColorFilter.colorMatrix(liveColorMatrix),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer {
+                                rotationZ = rotationDegrees
+                                scaleX = if (flipH) -1f else 1f
+                                scaleY = if (flipV) -1f else 1f
+                            }
+                    )
+                } else {
+                    AsyncImage(
+                        model = ImageRequest.Builder(context)
+                            .data(item.uri)
+                            .crossfade(false)
+                            .build(),
+                        contentDescription = "Preview",
+                        contentScale = if (cropAspect.ratio != null) ContentScale.Crop else ContentScale.Fit,
+                        colorFilter = ColorFilter.colorMatrix(liveColorMatrix),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer {
+                                rotationZ = rotationDegrees
+                                scaleX = if (flipH) -1f else 1f
+                                scaleY = if (flipV) -1f else 1f
+                            }
+                    )
+                }
+
+                // Glowing Object Eraser brush feedback while dragging
+                if (eraserPoints.isNotEmpty()) {
+                    Canvas(modifier = Modifier.fillMaxSize()) {
+                        if (eraserPoints.size == 1) {
+                            drawCircle(
+                                color = Color(0x8800E5FF),
+                                radius = 38f,
+                                center = eraserPoints.first()
+                            )
+                        } else {
+                            val path = Path().apply {
+                                moveTo(eraserPoints.first().x, eraserPoints.first().y)
+                                for (i in 1 until eraserPoints.size) {
+                                    lineTo(eraserPoints[i].x, eraserPoints[i].y)
+                                }
+                            }
+                            drawPath(
+                                path = path,
+                                color = Color(0x8800E5FF),
+                                style = Stroke(width = 76f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+                            )
                         }
-                )
+                    }
+                }
+
+                if (isAiProcessing) {
+                    Surface(
+                        shape = RoundedCornerShape(18.dp),
+                        color = Color.Black.copy(alpha = 0.72f)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
+                        ) {
+                            CircularProgressIndicator(
+                                color = colors.primaryBlue,
+                                strokeWidth = 2.dp,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text("Processando pixels...", color = Color.White, fontSize = 13.sp)
+                        }
+                    }
+                }
 
                 // Vignette preview overlay
                 if (vignette > 0.01f) {
@@ -694,12 +856,13 @@ fun EditorScreen(
                     }
 
                     EditorTab.AI_ASSIST -> {
-                        val aiPresets = listOf(
-                            "Brilho HDR" to "hdr",
-                            "Noite Nítida" to "noite",
+                        val aiTools = listOf(
+                            "Apagador IA" to "apagar",
+                            "Auto-Remaster Real" to "remaster",
+                            "Retrato Bokeh" to "bokeh",
+                            "Super Nitidez" to "nitidez",
+                            "Recuperar Sombras" to "sombras",
                             "Cinema Teal" to "cinema",
-                            "Retrato Suave" to "retrato",
-                            "Retrô Filme" to "vintage",
                             "B&W Drama" to "p&b"
                         )
                         Column(
@@ -719,7 +882,7 @@ fun EditorScreen(
                                     singleLine = true,
                                     placeholder = {
                                         Text(
-                                            "Ex: tom de filme quente, noite nítida...",
+                                            "Ex: desfocar fundo, nitidez, apagar, cinema...",
                                             color = Color(0x88FFFFFF),
                                             fontSize = 13.sp
                                         )
@@ -733,10 +896,26 @@ fun EditorScreen(
                                     shape = RoundedCornerShape(18.dp),
                                     modifier = Modifier.weight(1f)
                                 )
+                                if (bitmapHistory.isNotEmpty()) {
+                                    IconButton(
+                                        onClick = {
+                                            val prev = bitmapHistory.removeAt(bitmapHistory.lastIndex)
+                                            workingBitmap = prev
+                                            aiAppliedFeedback = "Ação de pixel desfeita"
+                                        }
+                                    ) {
+                                        Icon(
+                                            Icons.AutoMirrored.Rounded.Undo,
+                                            contentDescription = "Desfazer IA",
+                                            tint = Color.White
+                                        )
+                                    }
+                                }
                                 Button(
                                     onClick = {
-                                        applyAiAssistStyle(aiPrompt.ifBlank { "hdr" })
+                                        applyAiAssistStyle(aiPrompt.ifBlank { "remaster" })
                                     },
+                                    enabled = !isAiProcessing,
                                     shape = RoundedCornerShape(18.dp),
                                     colors = ButtonDefaults.buttonColors(containerColor = colors.primaryBlue),
                                     contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp)
@@ -747,12 +926,23 @@ fun EditorScreen(
                             LazyRow(
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                items(aiPresets) { (label, key) ->
+                                items(aiTools) { (label, key) ->
+                                    val isSelected = (key == "apagar" && isEraserMode) ||
+                                        (key != "apagar" && aiAppliedFeedback?.contains(label.split(" ").first(), ignoreCase = true) == true)
                                     FilterChip(
-                                        selected = aiAppliedFeedback?.contains(label.split(" ").first(), ignoreCase = true) == true,
+                                        selected = isSelected,
                                         onClick = {
-                                            aiPrompt = label
-                                            applyAiAssistStyle(key)
+                                            if (key == "apagar") {
+                                                isEraserMode = !isEraserMode
+                                                aiAppliedFeedback = if (isEraserMode) {
+                                                    "Borracha IA ativa: passe o dedo sobre o objeto"
+                                                } else {
+                                                    "Borracha IA desativada"
+                                                }
+                                            } else {
+                                                aiPrompt = label
+                                                applyAiAssistStyle(key)
+                                            }
                                         },
                                         label = { Text(label, fontSize = 12.sp) },
                                         colors = FilterChipDefaults.filterChipColors(
@@ -766,8 +956,8 @@ fun EditorScreen(
                             }
                             if (aiAppliedFeedback != null) {
                                 Text(
-                                    text = "✨ ${aiAppliedFeedback}",
-                                    color = colors.primaryBlue,
+                                    text = "✨ $aiAppliedFeedback",
+                                    color = if (isEraserMode) Color(0xFF00E5FF) else colors.primaryBlue,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Medium
                                 )

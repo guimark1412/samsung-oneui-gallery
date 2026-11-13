@@ -549,9 +549,12 @@ object MediaRepository {
         strokes: List<DrawStroke>,
         overlayTexts: List<OverlayTextItem>,
         previewWidth: Float,
-        previewHeight: Float
+        previewHeight: Float,
+        baseBitmap: Bitmap? = null
     ): Uri? = withContext(Dispatchers.IO) {
-        val original = decodeSampledBitmap(context, sourceUri, 2560) ?: return@withContext null
+        val original = baseBitmap?.copy(Bitmap.Config.ARGB_8888, false)
+            ?: decodeSampledBitmap(context, sourceUri, 2560)
+            ?: return@withContext null
 
         // 1. Apply rotation & flips
         val transformMatrix = Matrix().apply {
@@ -704,6 +707,26 @@ object MediaRepository {
         )
         result.postConcat(adjustMatrix)
         return result
+    }
+
+    suspend fun decodeBitmapForEditing(context: Context, uri: Uri, maxDim: Int = 1280): Bitmap? =
+        withContext(Dispatchers.IO) {
+            decodeSampledBitmap(context, uri, maxDim)
+        }
+
+    suspend fun saveDirectBitmap(
+        context: Context,
+        bitmap: Bitmap,
+        prefix: String = "Remaster_IA",
+        subFolder: String = "Galeria Editadas"
+    ): Uri? = withContext(Dispatchers.IO) {
+        saveBitmapToGallery(
+            context = context,
+            bitmap = bitmap,
+            displayName = "${prefix}_${System.currentTimeMillis()}.jpg",
+            subFolder = subFolder,
+            dateTakenMs = System.currentTimeMillis()
+        )
     }
 
     private fun decodeSampledBitmap(context: Context, uri: Uri, maxDim: Int): Bitmap? {

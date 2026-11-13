@@ -1,6 +1,7 @@
 package com.oneui.gallery.ui
 
 import android.content.Intent
+import android.graphics.Bitmap
 import android.text.format.Formatter
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -14,6 +15,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -93,6 +95,7 @@ import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -106,7 +109,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import com.oneui.gallery.data.ImageDiagnostics
 import com.oneui.gallery.data.MediaRepository
+import com.oneui.gallery.data.PixelAiEngine
 import com.oneui.gallery.model.BuiltInFilters
 import com.oneui.gallery.model.CropAspect
 import com.oneui.gallery.model.MediaItem
@@ -173,6 +178,16 @@ fun ViewerScreen(
     }
 
     val currentItem = items.getOrElse(pagerState.currentPage) { items.first() }
+    var realDiagnostics by remember(currentItem.id) { mutableStateOf<ImageDiagnostics?>(null) }
+    LaunchedEffect(currentItem.id, isInfoExpanded) {
+        if (!currentItem.isVideo && isInfoExpanded && realDiagnostics == null) {
+            val sample = MediaRepository.decodeBitmapForEditing(context, currentItem.uri, 512)
+            if (sample != null) {
+                realDiagnostics = PixelAiEngine.analyzeBitmap(sample)
+                sample.recycle()
+            }
+        }
+    }
     val dateFmt = remember { SimpleDateFormat("d 'de' MMMM • HH:mm", Locale("pt", "BR")) }
     val fullDateFmt = remember { SimpleDateFormat("EEEE, d 'de' MMMM 'de' yyyy • HH:mm", Locale("pt", "BR")) }
 
@@ -794,9 +809,19 @@ fun ViewerScreen(
                                 Spacer(modifier = Modifier.height(14.dp))
                                 OneUIHistogramChart(
                                     seed = currentItem.id,
+                                    diagnostics = realDiagnostics,
                                     accentBlue = colors.primaryBlue,
                                     accentRose = colors.galleryRose
                                 )
+                                if (realDiagnostics != null) {
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Text(
+                                        text = realDiagnostics!!.summaryText,
+                                        color = colors.primaryBlue,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                }
 
                                 HorizontalDivider(
                                     color = colors.divider,
@@ -825,18 +850,22 @@ fun ViewerScreen(
     }
 
     if (showRemasterCompare && !currentItem.isVideo) {
-        val vivid = remember { BuiltInFilters.presets.first { it.id == "vivid" } }
-        val remasterColorMatrix = remember(vivid) {
-            ColorMatrix(
-                MediaRepository.buildCombinedColorMatrix(
-                    filterMatrix = vivid.matrix,
-                    brightness = 0.04f,
-                    contrast = 1.12f,
-                    saturation = 1.14f,
-                    warmth = 0.05f
-                ).array
-            )
+        var originalBmp by remember(currentItem.id) { mutableStateOf<Bitmap?>(null) }
+        var remasteredBmp by remember(currentItem.id) { mutableStateOf<Bitmap?>(null) }
+        var remasterDiag by remember(currentItem.id) { mutableStateOf<ImageDiagnostics?>(null) }
+
+        LaunchedEffect(currentItem.id, showRemasterCompare) {
+            if (remasteredBmp == null) {
+                val decoded = MediaRepository.decodeBitmapForEditing(context, currentItem.uri, 1280)
+                if (decoded != null) {
+                    originalBmp = decoded
+                    val (outBmp, diag) = PixelAiEngine.remasterBitmap(decoded)
+                    remasteredBmp = outBmp
+                    remasterDiag = diag
+                }
+            }
         }
+
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -856,9 +885,9 @@ fun ViewerScreen(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text(
-                        text = "Remasterização com IA",
+                        text = "Remasterização IA (Pixels Reais)",
                         color = Color.White,
-                        fontSize = 18.sp,
+                        fontSize = 17.sp,
                         fontWeight = FontWeight.SemiBold
                     )
                     Surface(
@@ -894,24 +923,42 @@ fun ViewerScreen(
                         }
                     }
 
-                    // Bottom layer: Remastered AI preview (right side)
-                    AsyncImage(
-                        model = ImageRequest.Builder(context).data(currentItem.uri).crossfade(false).build(),
-                        contentDescription = "Remasterizado IA",
-                        contentScale = ContentScale.Fit,
-                        colorFilter = ColorFilter.colorMatrix(remasterColorMatrix),
-                        modifier = Modifier.fillMaxSize()
-                    )
+                    val orig = originalBmp
+                    val rem = remasteredBmp
+                    if (orig != null && rem != null) {
+                        // Bottom layer: real pixel-remastered bitmap (right side)
+                        Image(
+                            bitmap = rem.asImageBitmap(),
+                            contentDescription = "Remasterizado IA",
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier.fillMaxSize()
+                        )
 
-                    // Top layer clipped to left side: Original
-                    AsyncImage(
-                        model = ImageRequest.Builder(context).data(currentItem.uri).crossfade(false).build(),
-                        contentDescription = "Original",
-                        contentScale = ContentScale.Fit,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .clip(splitClip)
-                    )
+                        // Top layer clipped to left side: Original pixels
+                        Image(
+                            bitmap = orig.asImageBitmap(),
+                            contentDescription = "Original",
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clip(splitClip)
+                        )
+                    } else {
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier.fillMaxSize()
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                CircularProgressIndicator(color = colors.primaryBlue)
+                                Spacer(modifier = Modifier.height(10.dp))
+                                Text(
+                                    text = "Analisando histograma e nitidez dos pixels...",
+                                    color = Color.White.copy(alpha = 0.8f),
+                                    fontSize = 13.sp
+                                )
+                            }
+                        }
+                    }
 
                     // Badges
                     Surface(
@@ -943,6 +990,23 @@ fun ViewerScreen(
                             fontWeight = FontWeight.SemiBold,
                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
                         )
+                    }
+
+                    if (remasterDiag?.remasterNotes?.isNotBlank() == true) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = Color.Black.copy(alpha = 0.68f),
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(bottom = 14.dp)
+                        ) {
+                            Text(
+                                text = remasterDiag!!.remasterNotes,
+                                color = Color.White,
+                                fontSize = 11.sp,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                            )
+                        }
                     }
 
                     // Vertical divider line + handle
@@ -995,33 +1059,21 @@ fun ViewerScreen(
                     }
                     Surface(
                         onClick = {
-                            if (!isRemastering) {
+                            val rem = remasteredBmp
+                            if (!isRemastering && rem != null) {
                                 isRemastering = true
                                 scope.launch {
-                                    val saved = MediaRepository.saveEditedImage(
+                                    val saved = MediaRepository.saveDirectBitmap(
                                         context = context,
-                                        sourceUri = currentItem.uri,
-                                        rotationDegrees = 0f,
-                                        flipH = false,
-                                        flipV = false,
-                                        cropAspect = CropAspect.ORIGINAL,
-                                        filterMatrix = vivid.matrix,
-                                        brightness = 0.04f,
-                                        contrast = 1.12f,
-                                        saturation = 1.14f,
-                                        warmth = 0.05f,
-                                        vignette = 0.08f,
-                                        strokes = emptyList(),
-                                        overlayTexts = emptyList(),
-                                        previewWidth = 1080f,
-                                        previewHeight = 1080f
+                                        bitmap = rem,
+                                        prefix = "Remaster_IA"
                                     )
                                     isRemastering = false
                                     showRemasterCompare = false
                                     if (saved != null) {
                                         Toast.makeText(
                                             context,
-                                            "Remasterização salva em Galeria Editadas!",
+                                            "Remasterização real salva em Galeria Editadas!",
                                             Toast.LENGTH_SHORT
                                         ).show()
                                         onRemastered()
@@ -1030,7 +1082,7 @@ fun ViewerScreen(
                             }
                         },
                         shape = RoundedCornerShape(24.dp),
-                        color = colors.primaryBlue,
+                        color = if (remasteredBmp != null) colors.primaryBlue else colors.primaryBlue.copy(alpha = 0.4f),
                         modifier = Modifier.weight(1f)
                     ) {
                         Box(
@@ -1127,6 +1179,7 @@ private fun ExifBadgeChip(text: String, modifier: Modifier = Modifier) {
 @Composable
 private fun OneUIHistogramChart(
     seed: Long,
+    diagnostics: ImageDiagnostics?,
     accentBlue: Color,
     accentRose: Color
 ) {
@@ -1143,17 +1196,14 @@ private fun OneUIHistogramChart(
                 .fillMaxSize()
                 .padding(horizontal = 8.dp, vertical = 8.dp)
         ) {
-            val steps = 28
-            val phase = ((seed % 100) / 100f) * 3.14f
-
-            fun buildWave(offsetPhase: Float, freq: Float): Path {
+            fun buildBinsPath(bins: FloatArray): Path {
                 val path = Path()
                 path.moveTo(0f, size.height)
-                for (i in 0..steps) {
-                    val x = (i / steps.toFloat()) * size.width
-                    val norm = i / steps.toFloat()
-                    val v = (0.35f + 0.55f * abs(sin(norm * freq + phase + offsetPhase)) * (1f - abs(norm - 0.5f) * 0.6f))
-                    val y = size.height * (1f - v.coerceIn(0.08f, 0.94f))
+                val last = (bins.size - 1).coerceAtLeast(1)
+                for (i in bins.indices) {
+                    val x = (i / last.toFloat()) * size.width
+                    val v = bins[i].coerceIn(0.02f, 1f)
+                    val y = size.height * (1f - v)
                     path.lineTo(x, y)
                 }
                 path.lineTo(size.width, size.height)
@@ -1161,15 +1211,35 @@ private fun OneUIHistogramChart(
                 return path
             }
 
-            val lumaPath = buildWave(0f, 4.2f)
-            val bluePath = buildWave(1.1f, 5.1f)
-            val rosePath = buildWave(2.3f, 3.6f)
+            if (diagnostics != null) {
+                val lumaPath = buildBinsPath(diagnostics.lumaBins)
+                val bluePath = buildBinsPath(diagnostics.blueBins)
+                val rosePath = buildBinsPath(diagnostics.redBins)
 
-            drawPath(lumaPath, color = Color.White.copy(alpha = 0.14f))
-            drawPath(bluePath, color = accentBlue.copy(alpha = 0.22f))
-            drawPath(rosePath, color = accentRose.copy(alpha = 0.18f))
-
-            drawPath(lumaPath, color = Color.White.copy(alpha = 0.55f), style = Stroke(width = 1.8f, cap = StrokeCap.Round))
+                drawPath(lumaPath, color = Color.White.copy(alpha = 0.16f))
+                drawPath(bluePath, color = accentBlue.copy(alpha = 0.28f))
+                drawPath(rosePath, color = accentRose.copy(alpha = 0.24f))
+                drawPath(lumaPath, color = Color.White.copy(alpha = 0.65f), style = Stroke(width = 1.8f, cap = StrokeCap.Round))
+            } else {
+                val steps = 28
+                val phase = ((seed % 100) / 100f) * 3.14f
+                fun buildWave(offsetPhase: Float, freq: Float): Path {
+                    val path = Path()
+                    path.moveTo(0f, size.height)
+                    for (i in 0..steps) {
+                        val x = (i / steps.toFloat()) * size.width
+                        val norm = i / steps.toFloat()
+                        val v = (0.25f + 0.35f * abs(sin(norm * freq + phase + offsetPhase)) * (1f - abs(norm - 0.5f) * 0.6f))
+                        val y = size.height * (1f - v.coerceIn(0.08f, 0.94f))
+                        path.lineTo(x, y)
+                    }
+                    path.lineTo(size.width, size.height)
+                    path.close()
+                    return path
+                }
+                val lumaPath = buildWave(0f, 4.2f)
+                drawPath(lumaPath, color = Color.White.copy(alpha = 0.10f))
+            }
         }
     }
 }

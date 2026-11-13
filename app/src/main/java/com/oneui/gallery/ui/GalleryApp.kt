@@ -129,6 +129,7 @@ import androidx.core.content.ContextCompat
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.oneui.gallery.data.MediaRepository
+import com.oneui.gallery.data.PixelAiEngine
 import com.oneui.gallery.model.AlbumItem
 import com.oneui.gallery.model.MediaItem
 import com.oneui.gallery.model.StoryItem
@@ -1100,7 +1101,7 @@ fun GalleryApp() {
                 text = {
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text(
-                            text = "Descreva o tema, álbum ou momento desejado (ex: Favoritos, Câmera, Editadas, Viagem):",
+                            text = "Descreva o visual ou tema (ex: Pôr do sol, Noite, Azul, Natureza, P&B, Favoritos):",
                             color = colors.textSecondary,
                             fontSize = 13.sp
                         )
@@ -1108,7 +1109,7 @@ fun GalleryApp() {
                             value = storyPrompt,
                             onValueChange = { storyPrompt = it },
                             singleLine = true,
-                            placeholder = { Text("Ex: Melhores momentos favoritos") },
+                            placeholder = { Text("Ex: Pôr do sol quente ou Noite") },
                             modifier = Modifier.fillMaxWidth()
                         )
                     }
@@ -1117,34 +1118,45 @@ fun GalleryApp() {
                     TextButton(
                         onClick = {
                             val promptClean = storyPrompt.trim().ifBlank { "Destaques com IA" }
-                            val tokens = promptClean.lowercase().split(" ", ",", ".").filter { it.length >= 3 }
-                            val matched = activeItems.filter { item ->
-                                when {
-                                    "favorit" in promptClean.lowercase() -> item.isFavorite
-                                    "vídeo" in promptClean.lowercase() || "video" in promptClean.lowercase() -> item.isVideo
-                                    tokens.isEmpty() -> true
-                                    else -> tokens.any { t ->
-                                        item.name.contains(t, ignoreCase = true) ||
-                                            item.bucketName.contains(t, ignoreCase = true)
+                            showStoryAiDialog = false
+                            Toast.makeText(context, "Analisando pixels das fotos...", Toast.LENGTH_SHORT).show()
+                            scope.launch {
+                                val tokens = promptClean.lowercase().split(" ", ",", ".").filter { it.length >= 3 }
+                                val matchedList = mutableListOf<MediaItem>()
+                                for (item in activeItems.take(60)) {
+                                    val metaMatch = when {
+                                        "favorit" in promptClean.lowercase() -> item.isFavorite
+                                        "vídeo" in promptClean.lowercase() || "video" in promptClean.lowercase() -> item.isVideo
+                                        tokens.isEmpty() -> true
+                                        else -> tokens.any { t ->
+                                            item.name.contains(t, ignoreCase = true) ||
+                                                item.bucketName.contains(t, ignoreCase = true)
+                                        }
+                                    }
+                                    val visualMatch = if (!item.isVideo && !metaMatch && tokens.isNotEmpty()) {
+                                        PixelAiEngine.matchesVisualPrompt(context, item.uri, promptClean)
+                                    } else false
+
+                                    if (metaMatch || visualMatch) {
+                                        matchedList.add(item)
+                                        if (matchedList.size >= 10) break
                                     }
                                 }
-                            }.ifEmpty { activeItems }.take(10)
-
-                            if (matched.isNotEmpty()) {
-                                val newStory = StoryItem(
-                                    id = "ai_story_${System.currentTimeMillis()}",
-                                    title = promptClean,
-                                    subtitle = "✨ Criada por IA • ${matched.size} itens",
-                                    coverUri = matched.first().uri,
-                                    items = matched
-                                )
-                                customStories = listOf(newStory) + customStories
-                                showStoryAiDialog = false
-                                currentTab = GalleryTab.STORIES
-                                activeStory = newStory
-                            } else {
-                                Toast.makeText(context, "Nenhuma mídia encontrada para criar história.", Toast.LENGTH_SHORT).show()
-                                showStoryAiDialog = false
+                                val finalItems = matchedList.ifEmpty { activeItems.take(10) }
+                                if (finalItems.isNotEmpty()) {
+                                    val newStory = StoryItem(
+                                        id = "ai_story_${System.currentTimeMillis()}",
+                                        title = promptClean,
+                                        subtitle = "✨ Análise visual por pixels • ${finalItems.size} itens",
+                                        coverUri = finalItems.first().uri,
+                                        items = finalItems
+                                    )
+                                    customStories = listOf(newStory) + customStories
+                                    currentTab = GalleryTab.STORIES
+                                    activeStory = newStory
+                                } else {
+                                    Toast.makeText(context, "Nenhuma mídia encontrada para criar história.", Toast.LENGTH_SHORT).show()
+                                }
                             }
                         }
                     ) {
