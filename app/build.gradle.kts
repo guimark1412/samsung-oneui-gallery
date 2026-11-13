@@ -11,11 +11,23 @@ android {
         applicationId = "com.oneui.gallery"
         minSdk = 26
         targetSdk = 34
-        versionCode = 11
-        versionName = "1.6.0"
+        versionCode = 12
+        versionName = "1.6.1"
 
         vectorDrawables {
             useSupportLibrary = true
+        }
+    }
+
+    signingConfigs {
+        create("release") {
+            storeFile = file("oneui-gallery-release.jks")
+            storePassword = "OneUIGallery2026!"
+            keyAlias = "oneui_gallery_key"
+            keyPassword = "OneUIGallery2026!"
+            enableV1Signing = true
+            enableV2Signing = true
+            enableV3Signing = true
         }
     }
 
@@ -24,12 +36,14 @@ android {
             // R8 + shrink: código Compose otimizado (debug builds são muito mais lentos e travam)
             isMinifyEnabled = true
             isShrinkResources = true
-            // Assina com a chave de debug para permitir instalar/atualizar o APK diretamente
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+        }
+        debug {
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 
