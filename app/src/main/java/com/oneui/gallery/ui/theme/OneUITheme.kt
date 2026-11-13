@@ -5,6 +5,8 @@ import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,6 +26,7 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -40,6 +43,9 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
@@ -48,6 +54,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 data class OneUIColorPalette(
@@ -184,7 +191,10 @@ fun OneUICollapsingScaffold(
     val colors = LocalOneUIColors.current
     val density = LocalDensity.current
     val maxExpandPx = with(density) { 158.dp.toPx() }
-    var collapseOffsetPx by remember(title) { mutableFloatStateOf(0f) }
+    var collapseOffsetPx by remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(title) {
+        collapseOffsetPx = 0f
+    }
 
     val nestedScrollConnection = remember(maxExpandPx) {
         object : NestedScrollConnection {
@@ -232,6 +242,36 @@ fun OneUICollapsingScaffold(
             .background(colors.background)
             .statusBarsPadding()
             .nestedScroll(nestedScrollConnection)
+            .pointerInput(maxExpandPx) {
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Final)
+                    var totalDx = 0f
+                    var totalDy = 0f
+                    var engaged = false
+                    do {
+                        val event = awaitPointerEvent(pass = PointerEventPass.Final)
+                        val pressed = event.changes.filter { it.pressed }
+                        if (pressed.size == 1) {
+                            val ch = pressed[0]
+                            if (!ch.isConsumed) {
+                                val delta = ch.positionChange()
+                                totalDx += delta.x
+                                totalDy += delta.y
+                                if (!engaged && abs(totalDy) > 14f && abs(totalDy) > abs(totalDx) * 1.25f) {
+                                    engaged = true
+                                }
+                                if (engaged && delta.y != 0f) {
+                                    collapseOffsetPx = (collapseOffsetPx - delta.y).coerceIn(0f, maxExpandPx)
+                                }
+                            } else {
+                                engaged = false
+                            }
+                        } else {
+                            engaged = false
+                        }
+                    } while (event.changes.any { it.pressed })
+                }
+            }
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
             // Viewing Area (One UI Top Reachability Region)

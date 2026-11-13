@@ -184,10 +184,10 @@ private enum class TimelineScale(
     val cornerDp: Int,
     val spacingDp: Float
 ) {
-    DAY("Por Dia", 3, 12, 4f),
-    WEEK("Por Semana", 4, 9, 3f),
-    MONTH("Por Mês", 5, 6, 2f),
-    YEAR("Por Ano", 6, 4, 1.5f)
+    DAY("Por Dia", 3, 0, 2f),
+    WEEK("Por Semana", 4, 0, 2f),
+    MONTH("Por Mês", 5, 0, 1.5f),
+    YEAR("Por Ano", 6, 0, 1.5f)
 }
 
 private fun groupMediaByTimelineScale(
@@ -259,13 +259,6 @@ private fun groupMediaByTimelineScale(
     return groups.entries.map { it.key to it.value }
 }
 
-private enum class AlbumFilter(val label: String) {
-    ALL("Todos"),
-    CAMERA("Câmera"),
-    FAVORITES("Favoritos"),
-    VIDEOS("Vídeos")
-}
-
 private sealed interface CollectionRoute {
     data class Album(val album: AlbumItem) : CollectionRoute
     data object Favorites : CollectionRoute
@@ -313,7 +306,6 @@ fun GalleryApp() {
     var showSearch by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     var showOverflowMenu by remember { mutableStateOf(false) }
-    var albumFilter by remember { mutableStateOf(AlbumFilter.ALL) }
 
     var selectionMode by remember { mutableStateOf(false) }
     val selectedIds = remember { mutableStateListOf<Long>() }
@@ -665,21 +657,6 @@ fun GalleryApp() {
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.padding(end = 6.dp)
                     ) {
-                        // Create Collage (+) Circular Glass Button
-                        OneUICircularGlassAction(
-                            icon = Icons.Rounded.Add,
-                            description = "Criar colagem",
-                            tint = colors.textPrimary,
-                            onClick = {
-                                val photos = activeItems.filter { !it.isVideo }.take(4)
-                                if (photos.size >= 2) {
-                                    editingCollageItems = photos
-                                } else {
-                                    Toast.makeText(context, "Precisa de pelo menos 2 fotos na galeria", Toast.LENGTH_SHORT).show()
-                                }
-                            }
-                        )
-
                         if (currentTab == GalleryTab.PICTURES) {
                             OneUICircularGlassAction(
                                 icon = Icons.Outlined.Search,
@@ -935,8 +912,6 @@ fun GalleryApp() {
                         activeItems = activeItems,
                         privateCount = privateItems.size,
                         trashedCount = trashedItems.size,
-                        selectedFilter = albumFilter,
-                        onSelectFilter = { albumFilter = it },
                         onAlbumClick = { album -> collectionRoute = CollectionRoute.Album(album) },
                         onOpenFavorites = { collectionRoute = CollectionRoute.Favorites },
                         onOpenVideos = { collectionRoute = CollectionRoute.Videos },
@@ -1297,7 +1272,7 @@ private fun MediaGridContent(
         LazyVerticalGrid(
             state = gridState,
             columns = GridCells.Fixed(timelineScale.columns),
-            contentPadding = PaddingValues(start = 6.dp, end = 6.dp, top = 6.dp, bottom = 112.dp),
+            contentPadding = PaddingValues(start = 0.dp, end = 0.dp, top = 4.dp, bottom = 112.dp),
             horizontalArrangement = Arrangement.spacedBy(timelineScale.spacingDp.dp),
             verticalArrangement = Arrangement.spacedBy(timelineScale.spacingDp.dp),
             modifier = Modifier.fillMaxSize()
@@ -1430,7 +1405,7 @@ private fun OneUIGridThumbnail(
         label = "oneui_select_scale"
     )
     val cornerRadius by animateDpAsState(
-        targetValue = if (selectionMode && isSelected) (cornerDp + 4).dp else cornerDp.dp,
+        targetValue = if (selectionMode && isSelected) 8.dp else cornerDp.dp,
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioNoBouncy,
             stiffness = Spring.StiffnessMedium
@@ -1510,7 +1485,11 @@ private fun OneUIGridThumbnail(
                 }
                 .clip(shape)
                 .background(colors.surfaceCard)
-                .border(0.4.dp, colors.floatingBorder.copy(alpha = 0.35f), shape)
+                .then(
+                    if (cornerDp > 0 || (selectionMode && isSelected)) {
+                        Modifier.border(0.4.dp, colors.floatingBorder.copy(alpha = 0.35f), shape)
+                    } else Modifier
+                )
         ) {
             AsyncImage(
                 model = request,
@@ -1587,8 +1566,6 @@ private fun AlbumsTabContent(
     activeItems: List<MediaItem>,
     privateCount: Int,
     trashedCount: Int,
-    selectedFilter: AlbumFilter,
-    onSelectFilter: (AlbumFilter) -> Unit,
     onAlbumClick: (AlbumItem) -> Unit,
     onOpenFavorites: () -> Unit,
     onOpenVideos: () -> Unit,
@@ -1601,146 +1578,91 @@ private fun AlbumsTabContent(
     val context = LocalContext.current
     val colors = LocalOneUIColors.current
 
-    val filteredAlbums = remember(albums, activeItems, selectedFilter) {
-        when (selectedFilter) {
-            AlbumFilter.ALL -> albums
-            AlbumFilter.CAMERA -> albums.filter {
-                it.name.contains("Camera", ignoreCase = true) ||
-                    it.name.contains("Câmera", ignoreCase = true)
-            }
-            AlbumFilter.FAVORITES -> {
-                val favs = activeItems.filter { it.isFavorite }
-                if (favs.isEmpty()) emptyList()
-                else listOf(
-                    AlbumItem(
-                        id = "fav_virtual",
-                        name = "Favoritos",
-                        coverUri = favs.first().uri,
-                        items = favs,
-                        videoCount = favs.count { it.isVideo }
-                    )
-                )
-            }
-            AlbumFilter.VIDEOS -> albums.filter { it.videoCount > 0 }
-        }
-    }
-
     val recentItems = remember(activeItems) { activeItems.take(30) }
     val favItems = remember(activeItems) { activeItems.filter { it.isFavorite } }
     val videoItems = remember(activeItems) { activeItems.filter { it.isVideo } }
 
-    Column(modifier = Modifier.fillMaxSize()) {
-        // One UI 8 Stacked Cards Row (Recentes, Favoritos, Vídeos, Lixeira)
-        if (activeItems.isNotEmpty()) {
-            LazyRow(
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                item {
-                    OneUI8StackedCard(
-                        title = "Recentes",
-                        count = recentItems.size,
-                        coverUri = recentItems.firstOrNull()?.uri,
-                        icon = Icons.Outlined.History,
-                        accent = colors.primaryBlue,
-                        onClick = onOpenRecent
-                    )
-                }
-                item {
-                    OneUI8StackedCard(
-                        title = "Favoritos",
-                        count = favItems.size,
-                        coverUri = favItems.firstOrNull()?.uri,
-                        icon = Icons.Outlined.FavoriteBorder,
-                        accent = colors.galleryRose,
-                        onClick = onOpenFavorites
-                    )
-                }
-                item {
-                    OneUI8StackedCard(
-                        title = "Vídeos",
-                        count = videoItems.size,
-                        coverUri = videoItems.firstOrNull()?.uri,
-                        icon = Icons.Outlined.VideoLibrary,
-                        accent = Color(0xFF34C759),
-                        onClick = onOpenVideos
-                    )
-                }
-                item {
-                    OneUI8StackedCard(
-                        title = "Privado",
-                        count = privateCount,
-                        coverUri = null,
-                        icon = Icons.Rounded.Lock,
-                        accent = colors.primaryBlue,
-                        onClick = onOpenPrivate
-                    )
-                }
-                item {
-                    OneUI8StackedCard(
-                        title = "Lixeira",
-                        count = trashedCount,
-                        coverUri = null,
-                        icon = Icons.Outlined.Delete,
-                        accent = colors.textSecondary,
-                        onClick = onOpenTrash
-                    )
-                }
-            }
-        }
-
-        LazyRow(
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+    if (albums.isEmpty() && activeItems.isEmpty()) {
+        EmptyStateCard(
+            icon = Icons.Outlined.Folder,
+            title = "Nenhum álbum encontrado",
+            subtitle = "Gere fotos de demonstração para visualizar álbuns organizados como Câmera, Viagem e Screenshots.",
+            actionLabel = if (isGenerating) "Gerando..." else "Gerar 12 Fotos de Demonstração",
+            onAction = onGenerateSamples
+        )
+    } else {
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(3),
+            contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 8.dp, bottom = 110.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+            modifier = Modifier.fillMaxSize()
         ) {
-            items(AlbumFilter.entries) { filter ->
-                val selected = filter == selectedFilter
-                FilterChip(
-                    selected = selected,
-                    onClick = { onSelectFilter(filter) },
-                    label = {
-                        Text(
-                            text = filter.label,
-                            fontSize = 13.sp,
-                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
-                        )
-                    },
-                    shape = RoundedCornerShape(20.dp),
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = colors.primaryBlue,
-                        selectedLabelColor = Color.White,
-                        containerColor = colors.surfaceCard,
-                        labelColor = colors.textPrimary
-                    ),
-                    border = null
-                )
+            if (activeItems.isNotEmpty()) {
+                item(
+                    span = { GridItemSpan(3) },
+                    key = "albums_top_cards"
+                ) {
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 2.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        item {
+                            OneUI8StackedCard(
+                                title = "Recentes",
+                                count = recentItems.size,
+                                coverUri = recentItems.firstOrNull()?.uri,
+                                icon = Icons.Outlined.History,
+                                accent = colors.primaryBlue,
+                                onClick = onOpenRecent
+                            )
+                        }
+                        item {
+                            OneUI8StackedCard(
+                                title = "Favoritos",
+                                count = favItems.size,
+                                coverUri = favItems.firstOrNull()?.uri,
+                                icon = Icons.Outlined.FavoriteBorder,
+                                accent = colors.galleryRose,
+                                onClick = onOpenFavorites
+                            )
+                        }
+                        item {
+                            OneUI8StackedCard(
+                                title = "Vídeos",
+                                count = videoItems.size,
+                                coverUri = videoItems.firstOrNull()?.uri,
+                                icon = Icons.Outlined.VideoLibrary,
+                                accent = Color(0xFF34C759),
+                                onClick = onOpenVideos
+                            )
+                        }
+                        item {
+                            OneUI8StackedCard(
+                                title = "Privado",
+                                count = privateCount,
+                                coverUri = null,
+                                icon = Icons.Rounded.Lock,
+                                accent = colors.primaryBlue,
+                                onClick = onOpenPrivate
+                            )
+                        }
+                        item {
+                            OneUI8StackedCard(
+                                title = "Lixeira",
+                                count = trashedCount,
+                                coverUri = null,
+                                icon = Icons.Outlined.Delete,
+                                accent = colors.textSecondary,
+                                onClick = onOpenTrash
+                            )
+                        }
+                    }
+                }
             }
-        }
 
-        if (filteredAlbums.isEmpty()) {
-            EmptyStateCard(
-                icon = Icons.Outlined.Folder,
-                title = "Nenhum álbum encontrado",
-                subtitle = if (albums.isEmpty()) {
-                    "Gere fotos de demonstração para visualizar álbuns organizados como Câmera, Viagem e Screenshots."
-                } else {
-                    "Nenhum álbum corresponde ao filtro selecionado."
-                },
-                actionLabel = if (albums.isEmpty()) {
-                    if (isGenerating) "Gerando..." else "Gerar 12 Fotos de Demonstração"
-                } else null,
-                onAction = if (albums.isEmpty()) onGenerateSamples else null
-            )
-        } else {
-            LazyVerticalGrid(
-                columns = GridCells.Fixed(3),
-                contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 8.dp, bottom = 110.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-                modifier = Modifier.fillMaxSize()
-            ) {
-                items(filteredAlbums, key = { it.id }) { album ->
+            items(albums, key = { it.id }) { album ->
                     val isCamera = album.name.contains("Camera", ignoreCase = true) ||
                         album.name.contains("Câmera", ignoreCase = true)
                     Column(
@@ -1806,7 +1728,6 @@ private fun AlbumsTabContent(
                 }
             }
         }
-    }
 }
 
 /**

@@ -67,10 +67,10 @@ data class OverlayTextItem(
 )
 
 enum class CropAspect(val label: String, val ratio: Float?) {
-    ORIGINAL("Original", null),
+    FREE("Livre", null),
+    ORIGINAL("Original", -1f),
     SQUARE("1:1", 1f),
     FOUR_FIVE("4:5", 4f / 5f),
-    FIVE_FOUR("5:4", 5f / 4f),
     FOUR_THREE("4:3", 4f / 3f),
     SIXTEEN_NINE("16:9", 16f / 9f),
     NINE_SIXTEEN("9:16", 9f / 16f)

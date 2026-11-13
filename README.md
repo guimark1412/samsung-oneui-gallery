@@ -1,47 +1,42 @@
-# Galeria One UI (Samsung One UI Gallery Clone)
+# Galeria One UI
 
-Aplicativo Android de Galeria e Editor de Fotos construído em **Kotlin + Jetpack Compose**, desenhado visualmente seguindo as diretrizes oficiais da **Samsung One UI** (One UI 6/7) para rodar de forma leve e fluida no **Moto G15** e no emulador **BlueStacks**.
+Uma galeria alternativa leve e moderna para Android, baseada na linguagem visual **Samsung One UI**, focada em fluidez a 60–120 fps, gestos naturais e organização local de fotos e vídeos sem recursos invasivos de IA.
 
-## Recursos Principais
+## O que ela oferece
 
-- **Design Samsung One UI (Ergonomia + Squircle):**
-  - Cabeçalho expansível e recolhível (`OneUICollapsingScaffold`) com área de visualização ampla no topo e barra de ações ao alcance do polegar.
-  - Cards agrupados com cantos arredondados estilo *squircle* (`26.dp` e `18.dp`).
-  - Alternância instantânea entre **Modo Escuro AMOLED** e **Modo Claro One UI**.
-- **Aba Imagens:**
-  - Grade agrupada por data (*Hoje*, *Ontem*, datas anteriores).
-  - **Pinch-to-zoom** dinâmico e botões de zoom para alternar entre **2 e 6 colunas**.
-  - Pesquisa em tempo real por nome de arquivo ou álbum.
-  - Seleção múltipla com barra flutuante (*Enviar*, *Favoritar*, *Lixeira*).
-- **Aba Álbuns:**
-  - Filtros rápidos (*Todos*, *Câmera*, *Favoritos*, *Vídeos*) e cards de álbuns com contagem de itens.
-- **Aba Histórias:**
-  - Coleções automáticas (*Destaques Recentes*, *Favoritos da Galeria*, *Coleção de Viagem & Arte*, *Todos os Momentos*) com **Player de Histórias em tela cheia** e barra de progresso animada.
-- **Aba Menu:**
-  - Acesso rápido a **Favoritos**, **Vídeos**, **Recentes**, **Lixeira** (com restauração e exclusão permanente), alternância de tema e gerador de **12 fotos artísticas de demonstração** (ideal para testar em emuladores vazios).
-- **Visualizador em Tela Cheia (`ViewerScreen`) & Detalhes:**
-  - Navegação por deslize (`HorizontalPager`), zoom por pinça e duplo toque.
-  - Barra superior e inferior translúcidas no estilo Samsung e **Bottom Sheet de Detalhes (EXIF)** com resolução, megapixels, tamanho e álbum.
-- **Editor de Fotos Integrado (`EditorScreen`):**
-  - **Transformar:** Rotação ±90°, espelhamento horizontal/vertical e recorte por proporção (*Original*, *1:1*, *4:3*, *16:9*).
-  - **Filtros:** 9 filtros em tempo real (*Original, Vivo, Quente, Frio, P&B, Noir, Sépia, Retrô, Cyberpunk*).
-  - **Ajustes:** Brilho, Contraste, Saturação, Temperatura e Vinheta.
-  - **Desenhar & Texto:** Desenho livre com seleção de cores, espessura, desfazer e adição de textos.
-  - Salva uma cópia em alta resolução diretamente na galeria (`Pictures/Galeria Editadas`).
+- **Interface One UI responsiva**: cabeçalho expansível que recolhe ao rolar (alcance facilmente com uma mão), barra flutuante em cápsula (`Fotos` e `Álbuns`) e suporte a tema claro/escuro adaptado ao sistema.
+- **Grade de fotos em formato quadrado com pinça fluida**: miniaturas quadradas de ponta a ponta com gesto de pinça para alternar continuamente entre **Dias**, **Semanas**, **Meses** e **Anos**, com reposicionamento espacial estilo FLIP das fotos visíveis.
+- **Visualizador interativo**:
+  - Zoom com pinça e duplo toque até `4x` + pan suave.
+  - Arraste vertical para baixo com transição direta e proporcional de volta para a grade de fotos.
+  - Arraste vertical para cima (com sensibilidade calibrada para evitar abertura acidental no zoom 1x) para exibir a ficha de detalhes e metadados EXIF.
+  - Navegação lateral entre mídias e suporte integrado a vídeos.
+- **Editor de fotos integrado**:
+  - **Recorte interativo (`Recortar`)**: moldura recortável com arraste livre ou em proporções fixas (`Livre`, `Original`, `1:1`, `4:5`, `4:3`, `16:9`, `9:16`), alças nos cantos e bordas, grade dos terços, rotação fina (`-45°` a `+45°`), giros de `±90°` e espelhamento horizontal/vertical.
+  - **Filtros e Ajustes**: filtros visuais rápidos, brilho, contraste e saturação com pré-visualização em tempo real e salvamento diretamente via `MediaStore`.
+  - **Desenho livre**: traços com seleção de cor e espessura diretamente sobre a imagem.
+- **Álbuns, Colagens e Álbum Privado**:
+  - Acesso direto aos álbuns do dispositivo com cartões de destaque (Favoritos, Vídeos, Recentes e Lixeira) e contador no topo.
+  - Criador de colagens multi-layout e Álbum Privado protegido por PIN.
+- **APK enxuto e otimizado**: compilado com **R8**, shrink de recursos, Baseline Profile (`ProfileInstaller`) e cache de miniaturas decodificadas sob medida para evitar engasgos (*stuttering*) na rolagem.
 
-## Tecnologias Utilizadas
+## Tecnologias e ferramentas utilizadas
 
-- **Kotlin** + **Jetpack Compose** (Material 3 customizado com tokens One UI)
-- **Android MediaStore API** (imagens e vídeos)
-- **Coil** (`coil-compose` & `coil-video`)
-- **Canvas & ColorMatrix** para preview e exportação de edições
+| Camada | Ferramentas |
+| :--- | :--- |
+| **Linguagem & UI** | Kotlin, Jetpack Compose, Material 3 (tokens e componentes customizados One UI) |
+| **Animações & Gestos** | Compose `Animatable` (spring physics), `SharedBounds`/FLIP spatial interpolation, `PointerInput` multi-pass |
+| **Mídia & Imagens** | Android `MediaStore` API, Coil (`coil-compose`, `coil-video`), `ExifInterface`, `Media3` / `VideoView` |
+| **Processamento Gráfico** | Android `Bitmap`, `Canvas`, `Matrix`, `ColorMatrix` (recorte, rotação e filtros em hardware/native) |
+| **Armazenamento & Privacidade** | `SharedPreferences` / estado local seguro para PIN do Álbum Privado, Lixeira local com restauração |
+| **Build & Otimização** | Gradle Kotlin DSL, Android Gradle Plugin, **R8** (minificação e resource shrinking), `ProfileInstaller` |
 
-## Como Compilar
+## Instalação
 
-Requisitos: **JDK 17** e **Android SDK (API 34)**.
+Baixe o APK mais recente na página de [Releases](https://github.com/guimark1412/samsung-oneui-gallery/releases) (`SamsungOneUIGallery.apk`) ou compile localmente:
 
-```bash
-./gradlew assembleDebug
+```powershell
+.\gradlew.bat assembleRelease
 ```
 
-O APK será gerado em `app/build/outputs/apk/debug/app-debug.apk`.
+O APK de release será gerado em `app/build/outputs/apk/release/app-release.apk`.

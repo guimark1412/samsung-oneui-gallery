@@ -143,7 +143,7 @@ fun ViewerScreen(
     items: List<MediaItem>,
     initialIndex: Int,
     thumbnailBounds: Map<Long, Rect> = emptyMap(),
-    thumbnailCornerDp: Int = 12,
+    thumbnailCornerDp: Int = 0,
     isTrashMode: Boolean = false,
     isPrivateMode: Boolean = false,
     onBack: () -> Unit,
@@ -474,27 +474,26 @@ fun ViewerScreen(
                                             totalDx += panChange.x
                                             totalDy += panChange.y
 
+                                            val minSwipeUpPx = (totalHeightPx * 0.12f).coerceAtLeast(140f)
                                             if (draggingDownThisGesture) {
                                                 dragOffsetX += panChange.x
                                                 dragOffsetY = (dragOffsetY + panChange.y).coerceAtLeast(0f)
                                                 event.changes.forEach { if (it.positionChanged()) it.consume() }
-                                            } else if (abs(totalDy) > 26f && abs(totalDy) > abs(totalDx) * 1.2f) {
-                                                if (totalDy < 0f && !isInfoExpanded) {
-                                                    isInfoExpanded = true
-                                                    showControls = true
-                                                    verticalHandled = true
-                                                    event.changes.forEach { if (it.positionChanged()) it.consume() }
-                                                } else if (totalDy > 0f && isInfoExpanded) {
-                                                    isInfoExpanded = false
-                                                    verticalHandled = true
-                                                    event.changes.forEach { if (it.positionChanged()) it.consume() }
-                                                } else if (totalDy > 0f && !isInfoExpanded && !isDismissing) {
-                                                    draggingDownThisGesture = true
-                                                    isDraggingToDismiss = true
-                                                    dragOffsetX = totalDx
-                                                    dragOffsetY = totalDy.coerceAtLeast(0f)
-                                                    event.changes.forEach { if (it.positionChanged()) it.consume() }
-                                                }
+                                            } else if (totalDy < -minSwipeUpPx && abs(totalDy) > abs(totalDx) * 1.65f && !isInfoExpanded) {
+                                                isInfoExpanded = true
+                                                showControls = true
+                                                verticalHandled = true
+                                                event.changes.forEach { if (it.positionChanged()) it.consume() }
+                                            } else if (totalDy > 65f && abs(totalDy) > abs(totalDx) * 1.35f && isInfoExpanded) {
+                                                isInfoExpanded = false
+                                                verticalHandled = true
+                                                event.changes.forEach { if (it.positionChanged()) it.consume() }
+                                            } else if (totalDy > 36f && abs(totalDy) > abs(totalDx) * 1.25f && !isInfoExpanded && !isDismissing) {
+                                                draggingDownThisGesture = true
+                                                isDraggingToDismiss = true
+                                                dragOffsetX = totalDx
+                                                dragOffsetY = totalDy.coerceAtLeast(0f)
+                                                event.changes.forEach { if (it.positionChanged()) it.consume() }
                                             }
                                         }
                                     } while (event.changes.any { it.pressed })

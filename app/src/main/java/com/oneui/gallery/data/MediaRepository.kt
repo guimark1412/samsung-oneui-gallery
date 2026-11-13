@@ -20,6 +20,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.toArgb
 import com.oneui.gallery.model.AlbumItem
 import com.oneui.gallery.model.CollageLayout
@@ -550,6 +551,7 @@ object MediaRepository {
         overlayTexts: List<OverlayTextItem>,
         previewWidth: Float,
         previewHeight: Float,
+        cropRectNorm: Rect = Rect(0f, 0f, 1f, 1f),
         baseBitmap: Bitmap? = null
     ): Uri? = withContext(Dispatchers.IO) {
         val original = baseBitmap?.copy(Bitmap.Config.ARGB_8888, false)
@@ -566,21 +568,16 @@ object MediaRepository {
         )
         if (transformed != original) original.recycle()
 
-        // 2. Apply aspect ratio crop centered
-        val cropped = if (cropAspect.ratio != null) {
-            val targetRatio = cropAspect.ratio
-            val currentRatio = transformed.width.toFloat() / transformed.height.toFloat()
-            val cropW: Int
-            val cropH: Int
-            if (currentRatio > targetRatio) {
-                cropH = transformed.height
-                cropW = (cropH * targetRatio).roundToInt().coerceAtMost(transformed.width)
-            } else {
-                cropW = transformed.width
-                cropH = (cropW / targetRatio).roundToInt().coerceAtMost(transformed.height)
-            }
-            val startX = ((transformed.width - cropW) / 2).coerceAtLeast(0)
-            val startY = ((transformed.height - cropH) / 2).coerceAtLeast(0)
+        // 2. Apply normalized interactive crop rect
+        val leftNorm = cropRectNorm.left.coerceIn(0f, 0.95f)
+        val topNorm = cropRectNorm.top.coerceIn(0f, 0.95f)
+        val rightNorm = cropRectNorm.right.coerceIn(leftNorm + 0.05f, 1f)
+        val bottomNorm = cropRectNorm.bottom.coerceIn(topNorm + 0.05f, 1f)
+        val cropped = if (leftNorm > 0.002f || topNorm > 0.002f || rightNorm < 0.998f || bottomNorm < 0.998f) {
+            val startX = (leftNorm * transformed.width).roundToInt().coerceIn(0, transformed.width - 1)
+            val startY = (topNorm * transformed.height).roundToInt().coerceIn(0, transformed.height - 1)
+            val cropW = ((rightNorm - leftNorm) * transformed.width).roundToInt().coerceIn(1, transformed.width - startX)
+            val cropH = ((bottomNorm - topNorm) * transformed.height).roundToInt().coerceIn(1, transformed.height - startY)
             val c = Bitmap.createBitmap(transformed, startX, startY, cropW, cropH)
             if (c != transformed) transformed.recycle()
             c
