@@ -8,6 +8,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.expandVertically
@@ -40,6 +41,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -105,9 +107,13 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
@@ -128,6 +134,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
+import kotlin.math.roundToInt
 import kotlin.math.sin
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -135,6 +142,8 @@ import kotlin.math.sin
 fun ViewerScreen(
     items: List<MediaItem>,
     initialIndex: Int,
+    thumbnailBounds: Map<Long, Rect> = emptyMap(),
+    thumbnailCornerDp: Int = 12,
     isTrashMode: Boolean = false,
     isPrivateMode: Boolean = false,
     onBack: () -> Unit,
@@ -146,6 +155,7 @@ fun ViewerScreen(
     onPermanentDelete: (MediaItem) -> Unit
 ) {
     val context = LocalContext.current
+    val density = LocalDensity.current
     val colors = LocalOneUIColors.current
     val scope = rememberCoroutineScope()
 
@@ -162,10 +172,6 @@ fun ViewerScreen(
     var isInfoExpanded by remember { mutableStateOf(false) }
     var showPermanentDeleteDialog by remember { mutableStateOf(false) }
     var activeZoomScale by remember { mutableFloatStateOf(1f) }
-
-    BackHandler(enabled = isInfoExpanded) {
-        isInfoExpanded = false
-    }
 
     LaunchedEffect(pagerState.currentPage) {
         activeZoomScale = 1f
@@ -213,29 +219,160 @@ fun ViewerScreen(
         )
     }
 
+    // Hero open/dismiss & interactive drag-down to dismiss state
+    var rootOffset by remember { mutableStateOf(Offset.Zero) }
+    var dragOffsetX by remember { mutableFloatStateOf(0f) }
+    var dragOffsetY by remember { mutableFloatStateOf(0f) }
+    var isDraggingToDismiss by remember { mutableStateOf(false) }
+
+    val initialTargetRaw = remember(safeInitial) { thumbnailBounds[items[safeInitial].id] }
+    val openAnim = remember { Animatable(if (initialTargetRaw != null) 0f else 1f) }
+    var isOpening by remember { mutableStateOf(initialTargetRaw != null) }
+    LaunchedEffect(Unit) {
+        if (initialTargetRaw != null) {
+            openAnim.animateTo(
+                targetValue = 1f,
+                animationSpec = spring(
+                    dampingRatio = 0.88f,
+                    stiffness = 440f
+                )
+            )
+            isOpening = false
+        }
+    }
+
+    var isDismissing by remember { mutableStateOf(false) }
+    var dismissStartRect by remember { mutableStateOf<Rect?>(null) }
+    var dismissTargetRect by remember { mutableStateOf<Rect?>(null) }
+    var dismissStartCornerDp by remember { mutableFloatStateOf(0f) }
+    var dismissStartBackdropAlpha by remember { mutableFloatStateOf(1f) }
+    var dismissMediaItem by remember { mutableStateOf<MediaItem?>(null) }
+    val dismissAnim = remember { Animatable(0f) }
+
+    fun computeFullImageRect(media: MediaItem, screenW: Float, screenH: Float): Rect {
+        val ratio = if (media.width > 0 && media.height > 0) {
+            media.width.toFloat() / media.height.toFloat()
+        } else {
+            3f / 4f
+        }
+        val screenRatio = screenW / screenH
+        val w: Float
+        val h: Float
+        if (ratio > screenRatio) {
+            w = screenW
+            h = (screenW / ratio).coerceAtMost(screenH)
+        } else {
+            h = screenH
+            w = (screenH * ratio).coerceAtMost(screenW)
+        }
+        val left = (screenW - w) / 2f
+        val top = (screenH - h) / 2f
+        return Rect(left, top, left + w, top + h)
+    }
+
+    fun triggerAnimatedDismiss(fromDragged: Boolean, screenW: Float, screenH: Float) {
+        if (isDismissing) return
+        isOpening = false
+        val item = currentItem
+        val fullRect = computeFullImageRect(item, screenW, screenH)
+        val rawTarget = thumbnailBounds[item.id]
+        val localTarget = rawTarget?.let {
+            Rect(
+                it.left - rootOffset.x,
+                it.top - rootOffset.y,
+                it.right - rootOffset.x,
+                it.bottom - rootOffset.y
+            )
+        }
+
+        val df = if (fromDragged) (dragOffsetY / (screenH * 0.42f)).coerceIn(0f, 1f) else 0f
+        val ds = 1f - df * 0.44f
+        val startW = fullRect.width * ds
+        val startH = fullRect.height * ds
+        val startCx = fullRect.center.x + (if (fromDragged) dragOffsetX else 0f)
+        val startCy = fullRect.center.y + (if (fromDragged) dragOffsetY * 0.9f else 0f)
+
+        dismissStartRect = Rect(
+            startCx - startW / 2f,
+            startCy - startH / 2f,
+            startCx + startW / 2f,
+            startCy + startH / 2f
+        )
+        dismissTargetRect = localTarget
+        dismissStartCornerDp = if (fromDragged) df * 22f else 0f
+        dismissStartBackdropAlpha = if (fromDragged) (1f - df * 0.82f).coerceIn(0.15f, 1f) else 1f
+        dismissMediaItem = item
+        isDismissing = true
+
+        scope.launch {
+            dismissAnim.snapTo(0f)
+            dismissAnim.animateTo(
+                targetValue = 1f,
+                animationSpec = spring(
+                    dampingRatio = 0.88f,
+                    stiffness = 430f
+                )
+            )
+            onBack()
+        }
+    }
+
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black)
+            .onGloballyPositioned { coords ->
+                rootOffset = coords.positionInRoot()
+            }
     ) {
+        val totalWidthPx = constraints.maxWidth.toFloat().coerceAtLeast(1f)
         val totalHeightPx = constraints.maxHeight.toFloat().coerceAtLeast(1f)
         val sheetHeightDp = maxHeight * 0.56f
         val sheetHeightPx = totalHeightPx * 0.56f
+
+        BackHandler(enabled = !isDismissing) {
+            if (isInfoExpanded) {
+                isInfoExpanded = false
+            } else {
+                triggerAnimatedDismiss(fromDragged = false, screenW = totalWidthPx, screenH = totalHeightPx)
+            }
+        }
+
+        val dragFraction = (dragOffsetY / (totalHeightPx * 0.42f)).coerceIn(0f, 1f)
+        val dragScale = 1f - (dragFraction * 0.44f)
+        val currentBackdropAlpha = when {
+            isDismissing -> dismissStartBackdropAlpha * (1f - dismissAnim.value.coerceIn(0f, 1f))
+            isOpening -> openAnim.value.coerceIn(0f, 1f)
+            isDraggingToDismiss || dragOffsetY > 0.5f -> (1f - dragFraction * 0.82f).coerceIn(0.15f, 1f)
+            else -> 1f
+        }
+
+        // Dynamic black scrim (fades as user drags photo down, revealing the grid underneath)
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer { alpha = currentBackdropAlpha }
+                .background(Color.Black)
+        )
 
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer {
-                    alpha = infoAnim.value.coerceIn(0f, 1f)
+                    alpha = infoAnim.value.coerceIn(0f, 1f) * currentBackdropAlpha
                 }
                 .background(colors.background)
         )
 
-        // Photo Pager Area (fills screen; shifts & scales smoothly on draw phase when info opens/closes)
-        Box(modifier = Modifier.fillMaxSize()) {
+        // Photo Pager Area (hidden only while hero open/dismiss transition runs so there's no double photo)
+        val showPager = !isOpening && !isDismissing
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer { alpha = if (showPager) 1f else 0f }
+        ) {
             HorizontalPager(
                 state = pagerState,
-                userScrollEnabled = activeZoomScale <= 1.04f,
+                userScrollEnabled = activeZoomScale <= 1.04f && !isDraggingToDismiss && !isDismissing,
                 pageSpacing = 12.dp,
                 modifier = Modifier
                     .fillMaxSize()
@@ -250,24 +387,24 @@ fun ViewerScreen(
                     .clip(RoundedCornerShape(previewCorner))
             ) { page ->
                 val media = items[page]
+                val isCurrentPage = page == pagerState.currentPage
                 var scale by remember(media.id, pagerState.currentPage) { mutableFloatStateOf(1f) }
                 var offset by remember(media.id, pagerState.currentPage) { mutableStateOf(Offset.Zero) }
 
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .background(Color.Black)
                         .pointerInput(media.id, isInfoExpanded) {
                             detectTapGestures(
                                 onTap = {
                                     if (isInfoExpanded) {
                                         isInfoExpanded = false
-                                    } else {
+                                    } else if (!isDraggingToDismiss && !isDismissing) {
                                         showControls = !showControls
                                     }
                                 },
                                 onDoubleTap = {
-                                    if (!isInfoExpanded) {
+                                    if (!isInfoExpanded && !isDraggingToDismiss && !isDismissing) {
                                         if (scale > 1.1f) {
                                             scale = 1f
                                             offset = Offset.Zero
@@ -281,78 +418,119 @@ fun ViewerScreen(
                                 }
                             )
                         }
-                        // Multi-touch pinch + zoomed pan + vertical swipe-up/down for Info Panel
+                        // Multi-touch pinch + zoomed pan + vertical swipe-up (Info) & drag-down (Dismiss to Grid)
                         // NEVER consumes 1-finger horizontal drags at 1x zoom so HorizontalPager swipes smoothly!
-                        .pointerInput(media.id, isInfoExpanded) {
+                        .pointerInput(media.id, isInfoExpanded, totalHeightPx) {
                             awaitEachGesture {
                                 awaitFirstDown(requireUnconsumed = false)
                                 var totalDx = 0f
                                 var totalDy = 0f
                                 var verticalHandled = false
+                                var draggingDownThisGesture = false
 
-                                do {
-                                    val event = awaitPointerEvent()
-                                    val pressedCount = event.changes.count { it.pressed }
+                                try {
+                                    do {
+                                        val event = awaitPointerEvent()
+                                        val pressedCount = event.changes.count { it.pressed }
 
-                                    if (pressedCount >= 2 && !isInfoExpanded) {
-                                        val zoomChange = event.calculateZoom()
-                                        val panChange = event.calculatePan()
-                                        val newScale = (scale * zoomChange).coerceIn(1f, 4f)
-                                        scale = newScale
-                                        if (newScale > 1.04f) {
-                                            val maxX = (size.width * (newScale - 1f)) / 2f
-                                            val maxY = (size.height * (newScale - 1f)) / 2f
-                                            offset = Offset(
-                                                x = (offset.x + panChange.x).coerceIn(-maxX, maxX),
-                                                y = (offset.y + panChange.y).coerceIn(-maxY, maxY)
-                                            )
-                                        } else {
-                                            offset = Offset.Zero
-                                        }
-                                        if (page == pagerState.currentPage) {
-                                            activeZoomScale = scale
-                                        }
-                                        event.changes.forEach { if (it.positionChanged()) it.consume() }
-                                    } else if (pressedCount == 1 && scale > 1.04f) {
-                                        val panChange = event.calculatePan()
-                                        if (panChange != Offset.Zero) {
-                                            val maxX = (size.width * (scale - 1f)) / 2f
-                                            val maxY = (size.height * (scale - 1f)) / 2f
-                                            val nextX = offset.x + panChange.x
-                                            val nextY = offset.y + panChange.y
-                                            val hitHorizontalEdge = (nextX <= -maxX && panChange.x < 0f) ||
-                                                (nextX >= maxX && panChange.x > 0f)
-                                            offset = Offset(
-                                                x = nextX.coerceIn(-maxX, maxX),
-                                                y = nextY.coerceIn(-maxY, maxY)
-                                            )
-                                            if (!hitHorizontalEdge) {
+                                        if (pressedCount >= 2 && !isInfoExpanded && !draggingDownThisGesture) {
+                                            val zoomChange = event.calculateZoom()
+                                            val panChange = event.calculatePan()
+                                            val newScale = (scale * zoomChange).coerceIn(1f, 4f)
+                                            scale = newScale
+                                            if (newScale > 1.04f) {
+                                                val maxX = (size.width * (newScale - 1f)) / 2f
+                                                val maxY = (size.height * (newScale - 1f)) / 2f
+                                                offset = Offset(
+                                                    x = (offset.x + panChange.x).coerceIn(-maxX, maxX),
+                                                    y = (offset.y + panChange.y).coerceIn(-maxY, maxY)
+                                                )
+                                            } else {
+                                                offset = Offset.Zero
+                                            }
+                                            if (page == pagerState.currentPage) {
+                                                activeZoomScale = scale
+                                            }
+                                            event.changes.forEach { if (it.positionChanged()) it.consume() }
+                                        } else if (pressedCount == 1 && scale > 1.04f) {
+                                            val panChange = event.calculatePan()
+                                            if (panChange != Offset.Zero) {
+                                                val maxX = (size.width * (scale - 1f)) / 2f
+                                                val maxY = (size.height * (scale - 1f)) / 2f
+                                                val nextX = offset.x + panChange.x
+                                                val nextY = offset.y + panChange.y
+                                                val hitHorizontalEdge = (nextX <= -maxX && panChange.x < 0f) ||
+                                                    (nextX >= maxX && panChange.x > 0f)
+                                                offset = Offset(
+                                                    x = nextX.coerceIn(-maxX, maxX),
+                                                    y = nextY.coerceIn(-maxY, maxY)
+                                                )
+                                                if (!hitHorizontalEdge) {
+                                                    event.changes.forEach { if (it.positionChanged()) it.consume() }
+                                                }
+                                            }
+                                        } else if (pressedCount == 1 && scale <= 1.04f && !verticalHandled) {
+                                            val panChange = event.calculatePan()
+                                            totalDx += panChange.x
+                                            totalDy += panChange.y
+
+                                            if (draggingDownThisGesture) {
+                                                dragOffsetX += panChange.x
+                                                dragOffsetY = (dragOffsetY + panChange.y).coerceAtLeast(0f)
                                                 event.changes.forEach { if (it.positionChanged()) it.consume() }
+                                            } else if (abs(totalDy) > 26f && abs(totalDy) > abs(totalDx) * 1.2f) {
+                                                if (totalDy < 0f && !isInfoExpanded) {
+                                                    isInfoExpanded = true
+                                                    showControls = true
+                                                    verticalHandled = true
+                                                    event.changes.forEach { if (it.positionChanged()) it.consume() }
+                                                } else if (totalDy > 0f && isInfoExpanded) {
+                                                    isInfoExpanded = false
+                                                    verticalHandled = true
+                                                    event.changes.forEach { if (it.positionChanged()) it.consume() }
+                                                } else if (totalDy > 0f && !isInfoExpanded && !isDismissing) {
+                                                    draggingDownThisGesture = true
+                                                    isDraggingToDismiss = true
+                                                    dragOffsetX = totalDx
+                                                    dragOffsetY = totalDy.coerceAtLeast(0f)
+                                                    event.changes.forEach { if (it.positionChanged()) it.consume() }
+                                                }
                                             }
                                         }
-                                    } else if (pressedCount == 1 && scale <= 1.04f && !verticalHandled) {
-                                        val panChange = event.calculatePan()
-                                        totalDx += panChange.x
-                                        totalDy += panChange.y
-
-                                        if (abs(totalDy) > 42f && abs(totalDy) > abs(totalDx) * 1.35f) {
-                                            if (totalDy < 0f && !isInfoExpanded) {
-                                                isInfoExpanded = true
-                                                showControls = true
-                                                verticalHandled = true
-                                                event.changes.forEach { if (it.positionChanged()) it.consume() }
-                                            } else if (totalDy > 0f && isInfoExpanded) {
-                                                isInfoExpanded = false
-                                                verticalHandled = true
-                                                event.changes.forEach { if (it.positionChanged()) it.consume() }
+                                    } while (event.changes.any { it.pressed })
+                                } finally {
+                                    if (draggingDownThisGesture) {
+                                        isDraggingToDismiss = false
+                                        if (dragOffsetY > totalHeightPx * 0.14f) {
+                                            triggerAnimatedDismiss(
+                                                fromDragged = true,
+                                                screenW = totalWidthPx,
+                                                screenH = totalHeightPx
+                                            )
+                                        } else {
+                                            val startX = dragOffsetX
+                                            val startY = dragOffsetY
+                                            scope.launch {
+                                                animate(
+                                                    initialValue = 1f,
+                                                    targetValue = 0f,
+                                                    animationSpec = spring(
+                                                        dampingRatio = 0.82f,
+                                                        stiffness = Spring.StiffnessMedium
+                                                    )
+                                                ) { v, _ ->
+                                                    dragOffsetX = startX * v
+                                                    dragOffsetY = startY * v
+                                                }
                                             }
                                         }
                                     }
-                                } while (event.changes.any { it.pressed })
+                                }
                             }
                         },
                     contentAlignment = Alignment.Center
                 ) {
+                    val activeDragCorner = if (isCurrentPage && dragOffsetY > 0.5f) (dragFraction * 22f).dp else 0.dp
                     AsyncImage(
                         model = ImageRequest.Builder(context)
                             .data(media.uri)
@@ -363,11 +541,19 @@ fun ViewerScreen(
                         modifier = Modifier
                             .fillMaxSize()
                             .graphicsLayer {
-                                scaleX = scale
-                                scaleY = scale
-                                translationX = offset.x
-                                translationY = offset.y
+                                if (isCurrentPage && (isDraggingToDismiss || dragOffsetY > 0.5f)) {
+                                    translationX = dragOffsetX
+                                    translationY = dragOffsetY * 0.9f
+                                    scaleX = dragScale
+                                    scaleY = dragScale
+                                } else {
+                                    scaleX = scale
+                                    scaleY = scale
+                                    translationX = offset.x
+                                    translationY = offset.y
+                                }
                             }
+                            .then(if (activeDragCorner > 0.dp) Modifier.clip(RoundedCornerShape(activeDragCorner)) else Modifier)
                     )
 
                     if (media.isVideo && !isInfoExpanded) {
@@ -398,9 +584,9 @@ fun ViewerScreen(
                 }
             }
 
-            // Fullscreen Top Bar (hidden when split-screen Info Sheet is expanded)
+            // Fullscreen Top Bar (hidden when split-screen Info Sheet is expanded or during drag-dismiss)
             androidx.compose.animation.AnimatedVisibility(
-                visible = showControls && !isInfoExpanded,
+                visible = showControls && !isInfoExpanded && !isDraggingToDismiss && !isDismissing && !isOpening,
                 enter = fadeIn() + slideInVertically { -it },
                 exit = fadeOut() + slideOutVertically { -it },
                 modifier = Modifier.align(Alignment.TopCenter)
@@ -417,7 +603,13 @@ fun ViewerScreen(
                         .padding(horizontal = 6.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    IconButton(onClick = onBack) {
+                    IconButton(onClick = {
+                        triggerAnimatedDismiss(
+                            fromDragged = false,
+                            screenW = totalWidthPx,
+                            screenH = totalHeightPx
+                        )
+                    }) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
                             contentDescription = "Voltar",
@@ -451,9 +643,9 @@ fun ViewerScreen(
                 }
             }
 
-            // Fullscreen Bottom Controls: Swipe-Up Hint + Filmstrip + 5 Minimalist Icons
+            // Fullscreen Bottom Controls: Filmstrip + Minimalist Icons
             androidx.compose.animation.AnimatedVisibility(
-                visible = showControls && !isInfoExpanded,
+                visible = showControls && !isInfoExpanded && !isDraggingToDismiss && !isDismissing && !isOpening,
                 enter = fadeIn() + slideInVertically { it },
                 exit = fadeOut() + slideOutVertically { it },
                 modifier = Modifier.align(Alignment.BottomCenter)
@@ -583,6 +775,74 @@ fun ViewerScreen(
                             )
                         }
                     }
+                }
+            }
+        }
+
+        // Hero Shared-Bounds Open / Dismiss Transition Overlay (morphs photo directly to/from its grid cell)
+        if (isOpening || isDismissing) {
+            val heroItem = if (isDismissing) (dismissMediaItem ?: currentItem) else items[safeInitial]
+            val t = if (isDismissing) dismissAnim.value.coerceIn(0f, 1f) else openAnim.value.coerceIn(0f, 1f)
+            val fullRect = computeFullImageRect(heroItem, totalWidthPx, totalHeightPx)
+            val rawOpenStart = initialTargetRaw?.let {
+                Rect(
+                    it.left - rootOffset.x,
+                    it.top - rootOffset.y,
+                    it.right - rootOffset.x,
+                    it.bottom - rootOffset.y
+                )
+            }
+            val sRect: Rect?
+            val eRect: Rect
+            val startCorner: Float
+            val endCorner: Float
+            val heroAlpha: Float
+
+            if (isDismissing) {
+                sRect = dismissStartRect ?: fullRect
+                val fallbackRect = Rect(
+                    sRect.center.x - sRect.width * 0.22f,
+                    totalHeightPx * 0.68f - sRect.height * 0.22f,
+                    sRect.center.x + sRect.width * 0.22f,
+                    totalHeightPx * 0.68f + sRect.height * 0.22f
+                )
+                eRect = dismissTargetRect ?: fallbackRect
+                startCorner = dismissStartCornerDp
+                endCorner = if (dismissTargetRect != null) thumbnailCornerDp.toFloat() else 28f
+                heroAlpha = if (dismissTargetRect != null) 1f else (1f - t).coerceIn(0f, 1f)
+            } else {
+                sRect = rawOpenStart ?: fullRect
+                eRect = fullRect
+                startCorner = thumbnailCornerDp.toFloat()
+                endCorner = 0f
+                heroAlpha = 1f
+            }
+
+            if (sRect != null) {
+                val curLeft = sRect.left + (eRect.left - sRect.left) * t
+                val curTop = sRect.top + (eRect.top - sRect.top) * t
+                val curW = (sRect.width + (eRect.width - sRect.width) * t).coerceAtLeast(1f)
+                val curH = (sRect.height + (eRect.height - sRect.height) * t).coerceAtLeast(1f)
+                val curCorner = (startCorner + (endCorner - startCorner) * t).coerceAtLeast(0f)
+
+                val wDp = with(density) { curW.toDp() }
+                val hDp = with(density) { curH.toDp() }
+
+                Box(
+                    modifier = Modifier
+                        .offset { IntOffset(curLeft.roundToInt(), curTop.roundToInt()) }
+                        .size(width = wDp, height = hDp)
+                        .graphicsLayer { alpha = heroAlpha }
+                        .clip(RoundedCornerShape(curCorner.dp))
+                ) {
+                    AsyncImage(
+                        model = ImageRequest.Builder(context)
+                            .data(heroItem.uri)
+                            .build(),
+                        contentDescription = heroItem.name,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
                 }
             }
         }

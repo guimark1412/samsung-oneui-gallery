@@ -109,6 +109,7 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -319,6 +320,7 @@ fun GalleryApp() {
 
     var collectionRoute by remember { mutableStateOf<CollectionRoute?>(null) }
     var viewerRequest by remember { mutableStateOf<Triple<List<MediaItem>, Int, Boolean>?>(null) }
+    val thumbnailBounds = remember { HashMap<Long, Rect>() }
     var editingItem by remember { mutableStateOf<MediaItem?>(null) }
     var editingCollageItems by remember { mutableStateOf<List<MediaItem>?>(null) }
     var activeStory by remember { mutableStateOf<StoryItem?>(null) }
@@ -417,7 +419,7 @@ fun GalleryApp() {
         }
 
         BackHandler(
-            enabled = editingItem != null || editingCollageItems != null || viewerRequest != null ||
+            enabled = editingItem != null || editingCollageItems != null ||
                 activeStory != null || collectionRoute != null || selectionMode || showSearch ||
                 showPinDialogMode != null
         ) {
@@ -425,7 +427,6 @@ fun GalleryApp() {
                 showPinDialogMode != null -> showPinDialogMode = null
                 editingItem != null -> editingItem = null
                 editingCollageItems != null -> editingCollageItems = null
-                viewerRequest != null -> viewerRequest = null
                 activeStory != null -> activeStory = null
                 selectionMode -> {
                     selectionMode = false
@@ -485,69 +486,12 @@ fun GalleryApp() {
         }
 
         val currentViewer = viewerRequest
-        if (currentViewer != null) {
-            val (viewerList, initialIdx, isTrash) = currentViewer
-            val isPrivateRouteViewer = collectionRoute is CollectionRoute.Private && !isTrash
-            val syncedList = remember(viewerList, allMedia, isPrivateRouteViewer) {
-                val map = allMedia.associateBy { it.id }
-                viewerList.mapNotNull { map[it.id] }.filter {
-                    when {
-                        isTrash -> it.isTrashed
-                        isPrivateRouteViewer -> !it.isTrashed && it.isPrivate
-                        else -> !it.isTrashed && !it.isPrivate
-                    }
-                }
-            }
-            if (syncedList.isEmpty()) {
-                viewerRequest = null
-            } else {
-                ViewerScreen(
-                    items = syncedList,
-                    initialIndex = initialIdx.coerceIn(0, syncedList.lastIndex),
-                    isTrashMode = isTrash,
-                    isPrivateMode = isPrivateRouteViewer,
-                    onBack = { viewerRequest = null },
-                    onToggleFavorite = { item ->
-                        MediaRepository.toggleFavorite(context, item.id)
-                        refreshMedia()
-                    },
-                    onTogglePrivate = { item ->
-                        if (item.isPrivate) {
-                            MediaRepository.removeFromPrivate(context, listOf(item.id))
-                            Toast.makeText(context, "Removido do Álbum Privado", Toast.LENGTH_SHORT).show()
-                        } else {
-                            MediaRepository.moveToPrivate(context, listOf(item.id))
-                            Toast.makeText(context, "Movido para o Álbum Privado", Toast.LENGTH_SHORT).show()
-                        }
-                        refreshMedia()
-                    },
-                    onEdit = { item -> editingItem = item },
-                    onShare = { item -> shareItems(listOf(item)) },
-                    onTrashOrRestore = { item ->
-                        if (isTrash) {
-                            MediaRepository.restoreFromTrash(context, listOf(item.id))
-                            Toast.makeText(context, "Restaurado para a galeria", Toast.LENGTH_SHORT).show()
-                        } else {
-                            MediaRepository.moveToTrash(context, listOf(item.id))
-                            Toast.makeText(context, "Movido para a Lixeira", Toast.LENGTH_SHORT).show()
-                        }
-                        refreshMedia()
-                    },
-                    onPermanentDelete = { item ->
-                        scope.launch {
-                            MediaRepository.deletePermanently(context, listOf(item))
-                            refreshMedia()
-                        }
-                    }
-                )
-            }
-            return@OneUITheme
-        }
 
-        val route = collectionRoute
-        if (route != null) {
-            val isPrivateRoute = route is CollectionRoute.Private
-            val (routeTitle, routeItems, isTrashRoute) = when (route) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            val route = collectionRoute
+            if (route != null) {
+                val isPrivateRoute = route is CollectionRoute.Private
+                val (routeTitle, routeItems, isTrashRoute) = when (route) {
                 is CollectionRoute.Album -> Triple(
                     route.album.name,
                     activeItems.filter { it.bucketId == route.album.id },
@@ -657,6 +601,7 @@ fun GalleryApp() {
                         onTimelineScaleChange = { timelineScale = it },
                         selectionMode = selectionMode,
                         selectedIds = selectedIds,
+                        thumbnailBounds = thumbnailBounds,
                         onToggleSelect = { id ->
                             if (selectedIds.contains(id)) selectedIds.remove(id) else selectedIds.add(id)
                             if (selectedIds.isEmpty()) selectionMode = false
@@ -671,9 +616,7 @@ fun GalleryApp() {
                     )
                 }
             }
-            return@OneUITheme
-        }
-
+            } else {
         // Main Samsung One UI 7 / 8 Gallery 4-Tab Scaffold
         val tabTitle = when {
             selectionMode -> "${selectedIds.size} selecionado(s)"
@@ -969,6 +912,7 @@ fun GalleryApp() {
                                 onTimelineScaleChange = { newScale -> timelineScale = newScale },
                                 selectionMode = selectionMode,
                                 selectedIds = selectedIds,
+                                thumbnailBounds = thumbnailBounds,
                                 onToggleSelect = { id ->
                                     if (selectedIds.contains(id)) selectedIds.remove(id) else selectedIds.add(id)
                                     if (selectedIds.isEmpty()) selectionMode = false
@@ -1122,6 +1066,68 @@ fun GalleryApp() {
                 }
             )
         }
+            }
+
+            if (currentViewer != null) {
+                val (viewerList, initialIdx, isTrash) = currentViewer
+                val isPrivateRouteViewer = collectionRoute is CollectionRoute.Private && !isTrash
+                val syncedList = remember(viewerList, allMedia, isPrivateRouteViewer) {
+                    val map = allMedia.associateBy { it.id }
+                    viewerList.mapNotNull { map[it.id] }.filter {
+                        when {
+                            isTrash -> it.isTrashed
+                            isPrivateRouteViewer -> !it.isTrashed && it.isPrivate
+                            else -> !it.isTrashed && !it.isPrivate
+                        }
+                    }
+                }
+                if (syncedList.isEmpty()) {
+                    viewerRequest = null
+                } else {
+                    ViewerScreen(
+                        items = syncedList,
+                        initialIndex = initialIdx.coerceIn(0, syncedList.lastIndex),
+                        thumbnailBounds = thumbnailBounds,
+                        thumbnailCornerDp = timelineScale.cornerDp,
+                        isTrashMode = isTrash,
+                        isPrivateMode = isPrivateRouteViewer,
+                        onBack = { viewerRequest = null },
+                        onToggleFavorite = { item ->
+                            MediaRepository.toggleFavorite(context, item.id)
+                            refreshMedia()
+                        },
+                        onTogglePrivate = { item ->
+                            if (item.isPrivate) {
+                                MediaRepository.removeFromPrivate(context, listOf(item.id))
+                                Toast.makeText(context, "Removido do Álbum Privado", Toast.LENGTH_SHORT).show()
+                            } else {
+                                MediaRepository.moveToPrivate(context, listOf(item.id))
+                                Toast.makeText(context, "Movido para o Álbum Privado", Toast.LENGTH_SHORT).show()
+                            }
+                            refreshMedia()
+                        },
+                        onEdit = { item -> editingItem = item },
+                        onShare = { item -> shareItems(listOf(item)) },
+                        onTrashOrRestore = { item ->
+                            if (isTrash) {
+                                MediaRepository.restoreFromTrash(context, listOf(item.id))
+                                Toast.makeText(context, "Restaurado para a galeria", Toast.LENGTH_SHORT).show()
+                            } else {
+                                MediaRepository.moveToTrash(context, listOf(item.id))
+                                Toast.makeText(context, "Movido para a Lixeira", Toast.LENGTH_SHORT).show()
+                            }
+                            refreshMedia()
+                        },
+                        onPermanentDelete = { item ->
+                            scope.launch {
+                                MediaRepository.deletePermanently(context, listOf(item))
+                                refreshMedia()
+                            }
+                        }
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -1186,6 +1192,7 @@ private fun MediaGridContent(
     onTimelineScaleChange: (TimelineScale) -> Unit,
     selectionMode: Boolean,
     selectedIds: List<Long>,
+    thumbnailBounds: MutableMap<Long, Rect>,
     onToggleSelect: (Long) -> Unit,
     onEnterSelection: (Long) -> Unit,
     onItemClick: (Int) -> Unit
@@ -1368,6 +1375,7 @@ private fun MediaGridContent(
                         flipTracker = flipTracker,
                         flipProgress = flipProgressProvider,
                         pinchScale = pinchScaleProvider,
+                        thumbnailBounds = thumbnailBounds,
                         onClick = {
                             if (selectionMode) onToggleSelect(media.id)
                             else onItemClick(indexById[media.id] ?: 0)
@@ -1391,6 +1399,7 @@ private fun OneUIGridThumbnail(
     flipTracker: GridFlipTracker,
     flipProgress: () -> Float,
     pinchScale: () -> Float,
+    thumbnailBounds: MutableMap<Long, Rect>,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     modifier: Modifier = Modifier
@@ -1398,6 +1407,11 @@ private fun OneUIGridThumbnail(
     val context = LocalContext.current
     val colors = LocalOneUIColors.current
     val slotRectHolder = remember(media.id) { SlotRectHolder() }
+    DisposableEffect(media.id, thumbnailBounds) {
+        onDispose {
+            thumbnailBounds.remove(media.id)
+        }
+    }
     // Request estável: evita realocar/reiniciar o carregamento a cada recomposição
     val request = remember(media.uri) {
         ImageRequest.Builder(context)
@@ -1432,6 +1446,7 @@ private fun OneUIGridThumbnail(
                 if (coords.isAttached) {
                     val rect = Rect(coords.positionInRoot(), coords.size.toSize())
                     slotRectHolder.rect = rect
+                    thumbnailBounds[media.id] = rect
                     flipTracker.currentBounds[media.id] = rect
                     if (flipProgress() >= 0.999f) {
                         flipTracker.visualBounds[media.id] = rect
