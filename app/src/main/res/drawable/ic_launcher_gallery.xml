@@ -1,0 +1,56 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Samsung One UI Squircle Background (#F53855) -->
+    <path
+        android:fillColor="#F53855"
+        android:pathData="M54,4 C88,4 104,20 104,54 C104,88 88,104 54,104 C20,104 4,88 4,54 C4,20 20,4 54,4 Z" />
+
+    <!-- Samsung Gallery 6-Petal White Flower -->
+    <!-- Top petal -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,24 C58.5,24 62,27.5 62,32 L62,43 C62,47.5 58.5,51 54,51 C49.5,51 46,47.5 46,43 L46,32 C46,27.5 49.5,24 54,24 Z" />
+    <!-- Bottom petal -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,57 C58.5,57 62,60.5 62,65 L62,76 C62,80.5 58.5,84 54,84 C49.5,84 46,80.5 46,76 L46,65 C46,60.5 49.5,57 54,57 Z" />
+    <!-- Top-Right petal (60 deg) -->
+    <group
+        android:pivotX="54"
+        android:pivotY="54"
+        android:rotation="60">
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M54,24 C58.5,24 62,27.5 62,32 L62,43 C62,47.5 58.5,51 54,51 C49.5,51 46,47.5 46,43 L46,32 C46,27.5 49.5,24 54,24 Z" />
+    </group>
+    <!-- Bottom-Right petal (120 deg) -->
+    <group
+        android:pivotX="54"
+        android:pivotY="54"
+        android:rotation="120">
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M54,24 C58.5,24 62,27.5 62,32 L62,43 C62,47.5 58.5,51 54,51 C49.5,51 46,47.5 46,43 L46,32 C46,27.5 49.5,24 54,24 Z" />
+    </group>
+    <!-- Bottom-Left petal (240 deg) -->
+    <group
+        android:pivotX="54"
+        android:pivotY="54"
+        android:rotation="240">
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M54,24 C58.5,24 62,27.5 62,32 L62,43 C62,47.5 58.5,51 54,51 C49.5,51 46,47.5 46,43 L46,32 C46,27.5 49.5,24 54,24 Z" />
+    </group>
+    <!-- Top-Left petal (300 deg) -->
+    <group
+        android:pivotX="54"
+        android:pivotY="54"
+        android:rotation="300">
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M54,24 C58.5,24 62,27.5 62,32 L62,43 C62,47.5 58.5,51 54,51 C49.5,51 46,47.5 46,43 L46,32 C46,27.5 49.5,24 54,24 Z" />
+    </group>
+</vector>
