@@ -8,11 +8,11 @@ android {
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.oneui.gallery"
-        minSdk = 26
+        applicationId = "com.oneui.galeria"
+        minSdk = 23
         targetSdk = 34
-        versionCode = 14
-        versionName = "1.6.3"
+        versionCode = 15
+        versionName = "1.6.4"
 
         vectorDrawables {
             useSupportLibrary = true
@@ -33,9 +33,9 @@ android {
 
     buildTypes {
         release {
-            // R8 + shrink: código Compose otimizado (debug builds são muito mais lentos e travam)
-            isMinifyEnabled = true
-            isShrinkResources = true
+            // Recursos não ofuscados e APK release não-debugável para máxima compatibilidade no Redmi 9 / MIUI
+            isMinifyEnabled = false
+            isShrinkResources = false
             signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
