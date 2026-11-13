@@ -3,6 +3,7 @@ package com.oneui.gallery.ui
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -299,7 +300,6 @@ fun GalleryApp() {
     var hasPermission by remember { mutableStateOf(checkHasPermission()) }
     var allMedia by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
     var isLoading by remember { mutableStateOf(false) }
-    var isGeneratingSamples by remember { mutableStateOf(false) }
 
     var currentTab by remember { mutableStateOf(GalleryTab.PICTURES) }
     var timelineScale by remember { mutableStateOf(TimelineScale.WEEK) }
@@ -362,21 +362,6 @@ fun GalleryApp() {
                 }
             }
             context.startActivity(Intent.createChooser(intent, "Compartilhar mídia"))
-        }
-    }
-
-    fun triggerSampleGeneration() {
-        if (isGeneratingSamples) return
-        scope.launch {
-            isGeneratingSamples = true
-            val count = MediaRepository.generateSamplePhotos(context)
-            allMedia = MediaRepository.loadMedia(context)
-            isGeneratingSamples = false
-            Toast.makeText(
-                context,
-                if (count > 0) "$count fotos de demonstração criadas!" else "Permissão necessária para criar fotos.",
-                Toast.LENGTH_SHORT
-            ).show()
         }
     }
 
@@ -729,14 +714,6 @@ fun GalleryApp() {
                                         MediaRepository.setDarkMode(context, isDarkMode)
                                     }
                                 )
-                                DropdownMenuItem(
-                                    text = { Text("Gerar 12 fotos de exemplo", color = colors.primaryBlue, fontSize = 15.sp) },
-                                    leadingIcon = { Icon(Icons.Rounded.AutoAwesome, null, tint = colors.primaryBlue) },
-                                    onClick = {
-                                        showOverflowMenu = false
-                                        triggerSampleGeneration()
-                                    }
-                                )
                             }
                         }
                     }
@@ -874,12 +851,10 @@ fun GalleryApp() {
                                 subtitle = if (searchQuery.isNotBlank()) {
                                     "Tente outro termo de pesquisa."
                                 } else {
-                                    "O emulador ou dispositivo ainda não possui fotos. Gere 12 fotos artísticas de exemplo para testar todos os recursos agora!"
+                                    "Nenhuma foto ou vídeo encontrado no dispositivo."
                                 },
-                                actionLabel = if (searchQuery.isBlank()) {
-                                    if (isGeneratingSamples) "Gerando fotos..." else "Gerar 12 Fotos de Demonstração"
-                                } else null,
-                                onAction = if (searchQuery.isBlank()) ({ triggerSampleGeneration() }) else null
+                                actionLabel = null,
+                                onAction = null
                             )
                         }
                         else -> {
@@ -917,18 +892,14 @@ fun GalleryApp() {
                         onOpenVideos = { collectionRoute = CollectionRoute.Videos },
                         onOpenRecent = { collectionRoute = CollectionRoute.Recent },
                         onOpenPrivate = { openPrivateAlbum() },
-                        onOpenTrash = { collectionRoute = CollectionRoute.Trash },
-                        onGenerateSamples = { triggerSampleGeneration() },
-                        isGenerating = isGeneratingSamples
+                        onOpenTrash = { collectionRoute = CollectionRoute.Trash }
                     )
                 }
 
                 GalleryTab.STORIES -> {
                     StoriesTabContent(
                         stories = stories,
-                        onPlayStory = { story -> activeStory = story },
-                        onGenerateSamples = { triggerSampleGeneration() },
-                        isGenerating = isGeneratingSamples
+                        onPlayStory = { story -> activeStory = story }
                     )
                 }
 
@@ -940,14 +911,12 @@ fun GalleryApp() {
                         privateCount = privateItems.size,
                         trashCount = trashedItems.size,
                         isDarkMode = isDarkMode,
-                        isGenerating = isGeneratingSamples,
                         onOpenFavorites = { collectionRoute = CollectionRoute.Favorites },
                         onOpenVideos = { collectionRoute = CollectionRoute.Videos },
                         onOpenRecent = { collectionRoute = CollectionRoute.Recent },
                         onOpenPrivate = { openPrivateAlbum() },
                         onChangePrivatePin = { openChangePrivatePin() },
                         onOpenTrash = { collectionRoute = CollectionRoute.Trash },
-                        onGenerateSamples = { triggerSampleGeneration() },
                         onToggleDarkMode = { dark ->
                             isDarkMode = dark
                             MediaRepository.setDarkMode(context, dark)
@@ -1571,9 +1540,7 @@ private fun AlbumsTabContent(
     onOpenVideos: () -> Unit,
     onOpenRecent: () -> Unit,
     onOpenPrivate: () -> Unit,
-    onOpenTrash: () -> Unit,
-    onGenerateSamples: () -> Unit,
-    isGenerating: Boolean
+    onOpenTrash: () -> Unit
 ) {
     val context = LocalContext.current
     val colors = LocalOneUIColors.current
@@ -1586,9 +1553,9 @@ private fun AlbumsTabContent(
         EmptyStateCard(
             icon = Icons.Outlined.Folder,
             title = "Nenhum álbum encontrado",
-            subtitle = "Gere fotos de demonstração para visualizar álbuns organizados como Câmera, Viagem e Screenshots.",
-            actionLabel = if (isGenerating) "Gerando..." else "Gerar 12 Fotos de Demonstração",
-            onAction = onGenerateSamples
+            subtitle = "Seus álbuns e pastas aparecerão aqui automaticamente.",
+            actionLabel = null,
+            onAction = null
         )
     } else {
         LazyVerticalGrid(
@@ -1821,9 +1788,7 @@ private fun OneUI8StackedCard(
 @Composable
 private fun StoriesTabContent(
     stories: List<StoryItem>,
-    onPlayStory: (StoryItem) -> Unit,
-    onGenerateSamples: () -> Unit,
-    isGenerating: Boolean
+    onPlayStory: (StoryItem) -> Unit
 ) {
     val context = LocalContext.current
     val colors = LocalOneUIColors.current
@@ -1833,8 +1798,8 @@ private fun StoriesTabContent(
             icon = Icons.Outlined.AutoStories,
             title = "Sem histórias ainda",
             subtitle = "As histórias são geradas automaticamente a partir das suas fotos e favoritos.",
-            actionLabel = if (isGenerating) "Gerando..." else "Gerar 12 Fotos de Demonstração",
-            onAction = onGenerateSamples
+            actionLabel = null,
+            onAction = null
         )
         return
     }
@@ -2043,16 +2008,15 @@ private fun MenuTabContent(
     privateCount: Int,
     trashCount: Int,
     isDarkMode: Boolean,
-    isGenerating: Boolean,
     onOpenFavorites: () -> Unit,
     onOpenVideos: () -> Unit,
     onOpenRecent: () -> Unit,
     onOpenPrivate: () -> Unit,
     onChangePrivatePin: () -> Unit,
     onOpenTrash: () -> Unit,
-    onGenerateSamples: () -> Unit,
     onToggleDarkMode: (Boolean) -> Unit
 ) {
+    val context = LocalContext.current
     val colors = LocalOneUIColors.current
 
     LazyColumn(
@@ -2153,14 +2117,6 @@ private fun MenuTabContent(
                             )
                         )
                     }
-                    HorizontalDivider(color = colors.divider, modifier = Modifier.padding(horizontal = 20.dp))
-                    OneUIMenuRow(
-                        icon = Icons.Rounded.AutoAwesome,
-                        iconTint = Color(0xFFFF9F0A),
-                        title = if (isGenerating) "Gerando fotos de exemplo..." else "Gerar Fotos de Exemplo (Emulador)",
-                        trailingValue = "+12",
-                        onClick = onGenerateSamples
-                    )
                 }
             }
         }
@@ -2174,13 +2130,85 @@ private fun MenuTabContent(
                         fontSize = 16.sp,
                         fontWeight = FontWeight.SemiBold
                     )
-                    Spacer(modifier = Modifier.height(4.dp))
+                    Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = "Design moderno inspirado na Samsung One UI com pinça suave (Dia, Semana, Mês, Ano), Álbum Privado protegido por PIN, Estúdio de Colagens e Editor completo.",
+                        text = "Uma galeria alternativa moderna, leve e fluida inspirada na Samsung One UI — com navegação em pinça suave (Dia, Semana, Mês e Ano), Editor completo com recorte interativo, Estúdio de Colagens e Álbum Privado protegido por PIN.",
+                        color = colors.textSecondary,
+                        fontSize = 13.sp,
+                        lineHeight = 19.sp
+                    )
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(colors.galleryRose.copy(alpha = 0.12f))
+                            .border(
+                                width = 1.dp,
+                                color = colors.galleryRose.copy(alpha = 0.30f),
+                                shape = RoundedCornerShape(16.dp)
+                            )
+                            .padding(14.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Favorite,
+                                contentDescription = null,
+                                tint = colors.galleryRose,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text(
+                                text = "Para Manuela Almeida ♥",
+                                color = colors.textPrimary,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "Galeria feita especialmente e unicamente para Manuela Almeida — pensada em cada detalhe para guardar seus melhores sorrisos, memórias e momentos especiais com todo o carinho que você merece, Manu.",
+                            color = colors.textPrimary.copy(alpha = 0.88f),
+                            fontSize = 13.sp,
+                            lineHeight = 19.sp
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Text(
+                        text = "Quaisquer recomendações de atualização do software, sugestões ou melhorias, entre em contato:",
                         color = colors.textSecondary,
                         fontSize = 13.sp,
                         lineHeight = 18.sp
                     )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Button(
+                        onClick = {
+                            val msg = "Olá, estive usando o app Galeria One UI e solicito as seguintes alterações: "
+                            val url = "https://wa.me/559294635601?text=${Uri.encode(msg)}"
+                            runCatching {
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                }
+                                context.startActivity(intent)
+                            }.onFailure {
+                                Toast.makeText(context, "Não foi possível abrir o WhatsApp.", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFF25D366),
+                            contentColor = Color.White
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "Entrar em contato no WhatsApp",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
             }
         }

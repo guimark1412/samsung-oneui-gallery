@@ -2,8 +2,6 @@
 
 Uma galeria alternativa leve e moderna para Android, baseada na linguagem visual **Samsung One UI**, projetada para entregar fluidez a 60–120 fps, gestos naturais, edição completa de imagens e organização local de mídias sem recursos invasivos ou pesados de IA.
 
-> **Adendo:** *Galeria feita especialmente e unicamente para **Manuela Almeida**.*
-
 ---
 
 ## Sobre o projeto
