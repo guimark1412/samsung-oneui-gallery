@@ -44,6 +44,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -65,8 +66,10 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.outlined.AutoStories
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.DarkMode
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.DeleteForever
 import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.outlined.Folder
@@ -84,12 +87,17 @@ import androidx.compose.material.icons.rounded.CameraAlt
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Collections
+import androidx.compose.material.icons.rounded.CreateNewFolder
 import androidx.compose.material.icons.rounded.Dashboard
+import androidx.compose.material.icons.rounded.DriveFileMove
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.LockOpen
 import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.RestoreFromTrash
+import androidx.compose.material.icons.rounded.Slideshow
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -321,6 +329,14 @@ fun GalleryApp() {
     var pinInput by remember { mutableStateOf("") }
     var pinError by remember { mutableStateOf<String?>(null) }
 
+    var customAlbumsVersion by remember { mutableIntStateOf(0) }
+    var pendingTrashItems by remember { mutableStateOf<List<MediaItem>?>(null) }
+    var pendingPermanentDeleteItems by remember { mutableStateOf<List<MediaItem>?>(null) }
+    var albumActionMode by remember { mutableStateOf<String?>(null) } // "move" or "copy"
+    var showCreateAlbumDialog by remember { mutableStateOf(false) }
+    var newAlbumName by remember { mutableStateOf("") }
+    var showSelectionMoreMenu by remember { mutableStateOf(false) }
+
     fun refreshMedia() {
         if (!hasPermission) return
         scope.launch {
@@ -371,7 +387,9 @@ fun GalleryApp() {
         val activeItems = remember(allMedia) { allMedia.filter { !it.isTrashed && !it.isPrivate } }
         val privateItems = remember(allMedia) { allMedia.filter { !it.isTrashed && it.isPrivate } }
         val trashedItems = remember(allMedia) { allMedia.filter { it.isTrashed } }
-        val albums = remember(activeItems) { MediaRepository.buildAlbums(activeItems) }
+        val albums = remember(activeItems, customAlbumsVersion) {
+            MediaRepository.buildAlbums(activeItems, MediaRepository.getCustomAlbums(context))
+        }
         val stories = remember(activeItems) { MediaRepository.buildStories(activeItems) }
 
         fun openPrivateAlbum() {
@@ -398,9 +416,14 @@ fun GalleryApp() {
         BackHandler(
             enabled = editingItem != null || editingCollageItems != null ||
                 activeStory != null || collectionRoute != null || selectionMode || showSearch ||
-                showPinDialogMode != null
+                showPinDialogMode != null || pendingTrashItems != null ||
+                pendingPermanentDeleteItems != null || albumActionMode != null || showCreateAlbumDialog
         ) {
             when {
+                showCreateAlbumDialog -> showCreateAlbumDialog = false
+                albumActionMode != null -> albumActionMode = null
+                pendingPermanentDeleteItems != null -> pendingPermanentDeleteItems = null
+                pendingTrashItems != null -> pendingTrashItems = null
                 showPinDialogMode != null -> showPinDialogMode = null
                 editingItem != null -> editingItem = null
                 editingCollageItems != null -> editingCollageItems = null
@@ -502,23 +525,92 @@ fun GalleryApp() {
             }
 
             OneUICollapsingScaffold(
-                title = routeTitle,
-                subtitle = "${routeItems.size} ${if (routeItems.size == 1) "item" else "itens"}",
+                title = if (selectionMode) "${selectedIds.size} selecionado(s)" else routeTitle,
+                subtitle = if (selectionMode) {
+                    "Toque para marcar ou desmarcar"
+                } else {
+                    "${routeItems.size} ${if (routeItems.size == 1) "item" else "itens"}"
+                },
                 navigationIcon = {
-                    IconButton(onClick = {
-                        selectionMode = false
-                        selectedIds.clear()
-                        collectionRoute = null
-                    }) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
-                            contentDescription = "Voltar",
-                            tint = colors.textPrimary
-                        )
+                    if (selectionMode) {
+                        IconButton(onClick = {
+                            selectionMode = false
+                            selectedIds.clear()
+                        }) {
+                            Icon(
+                                imageVector = Icons.Outlined.Close,
+                                contentDescription = "Cancelar seleção",
+                                tint = colors.textPrimary
+                            )
+                        }
+                    } else {
+                        IconButton(onClick = {
+                            selectionMode = false
+                            selectedIds.clear()
+                            collectionRoute = null
+                        }) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                                contentDescription = "Voltar",
+                                tint = colors.textPrimary
+                            )
+                        }
                     }
                 },
                 actions = {
-                    if (isTrashRoute && routeItems.isNotEmpty()) {
+                    if (selectionMode) {
+                        IconButton(onClick = {
+                            if (selectedIds.size == routeItems.size && routeItems.isNotEmpty()) {
+                                selectedIds.clear()
+                            } else {
+                                selectedIds.clear()
+                                selectedIds.addAll(routeItems.map { it.id })
+                            }
+                        }) {
+                            Icon(
+                                imageVector = Icons.Outlined.SelectAll,
+                                contentDescription = "Selecionar tudo",
+                                tint = colors.primaryBlue
+                            )
+                        }
+                        if (!isTrashRoute) {
+                            Box {
+                                IconButton(onClick = { showSelectionMoreMenu = true }) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.MoreVert,
+                                        contentDescription = "Mais ações",
+                                        tint = colors.textPrimary
+                                    )
+                                }
+                                SelectionMoreMenu(
+                                    expanded = showSelectionMoreMenu,
+                                    onDismiss = { showSelectionMoreMenu = false },
+                                    sourceItems = routeItems,
+                                    selectedIds = selectedIds,
+                                    onMoveToAlbum = { albumActionMode = "move" },
+                                    onCopyToAlbum = { albumActionMode = "copy" },
+                                    onCreateAlbumWithSelected = {
+                                        newAlbumName = ""
+                                        albumActionMode = "move"
+                                        showCreateAlbumDialog = true
+                                    },
+                                    onPlaySlideshow = { photos ->
+                                        if (photos.isNotEmpty()) {
+                                            activeStory = StoryItem(
+                                                id = "selection_story_${System.currentTimeMillis()}",
+                                                title = "Seleção (${photos.size})",
+                                                subtitle = "${photos.size} ${if (photos.size == 1) "foto" else "fotos"}",
+                                                coverUri = photos.first().uri,
+                                                items = photos
+                                            )
+                                        } else {
+                                            Toast.makeText(context, "Selecione ao menos uma foto.", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    } else if (isTrashRoute && routeItems.isNotEmpty()) {
                         TextButton(onClick = {
                             MediaRepository.restoreFromTrash(context, routeItems.map { it.id })
                             refreshMedia()
@@ -527,11 +619,7 @@ fun GalleryApp() {
                             Text("Restaurar", color = colors.primaryBlue, fontSize = 14.sp, fontWeight = FontWeight.Medium)
                         }
                         TextButton(onClick = {
-                            scope.launch {
-                                MediaRepository.deletePermanently(context, routeItems)
-                                refreshMedia()
-                                Toast.makeText(context, "Lixeira esvaziada", Toast.LENGTH_SHORT).show()
-                            }
+                            pendingPermanentDeleteItems = routeItems
                         }) {
                             Text("Esvaziar", color = colors.galleryRose, fontSize = 14.sp, fontWeight = FontWeight.Medium)
                         }
@@ -547,6 +635,56 @@ fun GalleryApp() {
                             }) {
                                 Text("Desbloquear", color = colors.primaryBlue, fontSize = 14.sp, fontWeight = FontWeight.Medium)
                             }
+                        }
+                    }
+                },
+                bottomBar = {
+                    if (selectionMode) {
+                        val selectedRouteItems = routeItems.filter { selectedIds.contains(it.id) }
+                        if (isTrashRoute) {
+                            TrashSelectionBottomBar(
+                                selectedCount = selectedRouteItems.size,
+                                onRestore = {
+                                    MediaRepository.restoreFromTrash(context, selectedRouteItems.map { it.id })
+                                    selectionMode = false
+                                    selectedIds.clear()
+                                    refreshMedia()
+                                    Toast.makeText(context, "${selectedRouteItems.size} item(ns) restaurado(s)", Toast.LENGTH_SHORT).show()
+                                },
+                                onDeleteForever = {
+                                    pendingPermanentDeleteItems = selectedRouteItems
+                                }
+                            )
+                        } else {
+                            val selectedPhotos = selectedRouteItems.filter { !it.isVideo }
+                            SelectionBottomBar(
+                                selectedCount = selectedRouteItems.size,
+                                canCollage = selectedPhotos.size in 2..6,
+                                isPrivateRoute = isPrivateRoute,
+                                onShare = { shareItems(selectedRouteItems) },
+                                onMoveToAlbum = { albumActionMode = "move" },
+                                onFavorite = {
+                                    MediaRepository.setFavorites(context, selectedRouteItems.map { it.id }, true)
+                                    selectionMode = false
+                                    selectedIds.clear()
+                                    refreshMedia()
+                                    Toast.makeText(context, "Adicionado aos Favoritos", Toast.LENGTH_SHORT).show()
+                                },
+                                onCollage = { editingCollageItems = selectedPhotos },
+                                onPrivate = {
+                                    if (isPrivateRoute) {
+                                        MediaRepository.removeFromPrivate(context, selectedRouteItems.map { it.id })
+                                        Toast.makeText(context, "Removido do Álbum Privado", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        MediaRepository.moveToPrivate(context, selectedRouteItems.map { it.id })
+                                        Toast.makeText(context, "Movido para o Álbum Privado", Toast.LENGTH_SHORT).show()
+                                    }
+                                    selectionMode = false
+                                    selectedIds.clear()
+                                    refreshMedia()
+                                },
+                                onDelete = { pendingTrashItems = selectedRouteItems }
+                            )
                         }
                     }
                 }
@@ -623,7 +761,7 @@ fun GalleryApp() {
             actions = {
                 if (selectionMode) {
                     IconButton(onClick = {
-                        if (selectedIds.size == displayedPictures.size) {
+                        if (selectedIds.size == displayedPictures.size && displayedPictures.isNotEmpty()) {
                             selectedIds.clear()
                         } else {
                             selectedIds.clear()
@@ -634,6 +772,41 @@ fun GalleryApp() {
                             imageVector = Icons.Outlined.SelectAll,
                             contentDescription = "Selecionar tudo",
                             tint = colors.primaryBlue
+                        )
+                    }
+                    Box {
+                        IconButton(onClick = { showSelectionMoreMenu = true }) {
+                            Icon(
+                                imageVector = Icons.Rounded.MoreVert,
+                                contentDescription = "Mais ações",
+                                tint = colors.textPrimary
+                            )
+                        }
+                        SelectionMoreMenu(
+                            expanded = showSelectionMoreMenu,
+                            onDismiss = { showSelectionMoreMenu = false },
+                            sourceItems = displayedPictures,
+                            selectedIds = selectedIds,
+                            onMoveToAlbum = { albumActionMode = "move" },
+                            onCopyToAlbum = { albumActionMode = "copy" },
+                            onCreateAlbumWithSelected = {
+                                newAlbumName = ""
+                                albumActionMode = "move"
+                                showCreateAlbumDialog = true
+                            },
+                            onPlaySlideshow = { photos ->
+                                if (photos.isNotEmpty()) {
+                                    activeStory = StoryItem(
+                                        id = "selection_story_${System.currentTimeMillis()}",
+                                        title = "Seleção (${photos.size})",
+                                        subtitle = "${photos.size} ${if (photos.size == 1) "foto" else "fotos"}",
+                                        coverUri = photos.first().uri,
+                                        items = photos
+                                    )
+                                } else {
+                                    Toast.makeText(context, "Selecione ao menos uma foto.", Toast.LENGTH_SHORT).show()
+                                }
+                            }
                         )
                     }
                 } else {
@@ -650,6 +823,17 @@ fun GalleryApp() {
                                 onClick = {
                                     showSearch = !showSearch
                                     if (!showSearch) searchQuery = ""
+                                }
+                            )
+                        } else if (currentTab == GalleryTab.ALBUMS) {
+                            OneUICircularGlassAction(
+                                icon = Icons.Rounded.Add,
+                                description = "Criar novo álbum",
+                                tint = colors.textPrimary,
+                                onClick = {
+                                    newAlbumName = ""
+                                    albumActionMode = null
+                                    showCreateAlbumDialog = true
                                 }
                             )
                         }
@@ -776,18 +960,16 @@ fun GalleryApp() {
             },
             bottomBar = {
                 if (selectionMode) {
-                    val selectedPhotos = remember(displayedPictures, selectedIds.size) {
-                        displayedPictures.filter { selectedIds.contains(it.id) && !it.isVideo }
-                    }
+                    val selectedMainItems = displayedPictures.filter { selectedIds.contains(it.id) }
+                    val selectedPhotos = selectedMainItems.filter { !it.isVideo }
                     SelectionBottomBar(
-                        selectedCount = selectedIds.size,
+                        selectedCount = selectedMainItems.size,
                         canCollage = selectedPhotos.size in 2..6,
-                        onShare = {
-                            val itemsToShare = displayedPictures.filter { selectedIds.contains(it.id) }
-                            shareItems(itemsToShare)
-                        },
+                        isPrivateRoute = false,
+                        onShare = { shareItems(selectedMainItems) },
+                        onMoveToAlbum = { albumActionMode = "move" },
                         onFavorite = {
-                            MediaRepository.setFavorites(context, selectedIds.toList(), true)
+                            MediaRepository.setFavorites(context, selectedMainItems.map { it.id }, true)
                             selectionMode = false
                             selectedIds.clear()
                             refreshMedia()
@@ -797,18 +979,14 @@ fun GalleryApp() {
                             editingCollageItems = selectedPhotos
                         },
                         onPrivate = {
-                            MediaRepository.moveToPrivate(context, selectedIds.toList())
+                            MediaRepository.moveToPrivate(context, selectedMainItems.map { it.id })
                             selectionMode = false
                             selectedIds.clear()
                             refreshMedia()
                             Toast.makeText(context, "Movido para o Álbum Privado", Toast.LENGTH_SHORT).show()
                         },
                         onDelete = {
-                            MediaRepository.moveToTrash(context, selectedIds.toList())
-                            selectionMode = false
-                            selectedIds.clear()
-                            refreshMedia()
-                            Toast.makeText(context, "Movido para a Lixeira", Toast.LENGTH_SHORT).show()
+                            pendingTrashItems = selectedMainItems
                         }
                     )
                 } else {
@@ -1010,6 +1188,308 @@ fun GalleryApp() {
                 }
             )
         }
+            }
+
+            val trashTargets = pendingTrashItems
+            if (trashTargets != null && trashTargets.isNotEmpty()) {
+                AlertDialog(
+                    onDismissRequest = { pendingTrashItems = null },
+                    containerColor = colors.surfaceCard,
+                    shape = OneUIShapeMedium,
+                    title = {
+                        Text(
+                            text = if (trashTargets.size == 1) "Mover para a Lixeira?" else "Mover ${trashTargets.size} itens para a Lixeira?",
+                            color = colors.textPrimary,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    },
+                    text = {
+                        Text(
+                            text = "Os itens selecionados serão movidos para a Lixeira e poderão ser restaurados depois.",
+                            color = colors.textSecondary
+                        )
+                    },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                MediaRepository.moveToTrash(context, trashTargets.map { it.id })
+                                pendingTrashItems = null
+                                selectionMode = false
+                                selectedIds.clear()
+                                refreshMedia()
+                                Toast.makeText(
+                                    context,
+                                    if (trashTargets.size == 1) "Movido para a Lixeira" else "${trashTargets.size} itens movidos para a Lixeira",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        ) {
+                            Text("Mover para a Lixeira", color = colors.galleryRose, fontWeight = FontWeight.Bold)
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { pendingTrashItems = null }) {
+                            Text("Cancelar", color = colors.primaryBlue)
+                        }
+                    }
+                )
+            }
+
+            val permTargets = pendingPermanentDeleteItems
+            if (permTargets != null && permTargets.isNotEmpty()) {
+                AlertDialog(
+                    onDismissRequest = { pendingPermanentDeleteItems = null },
+                    containerColor = colors.surfaceCard,
+                    shape = OneUIShapeMedium,
+                    title = {
+                        Text(
+                            text = if (permTargets.size == 1) "Excluir permanentemente?" else "Excluir ${permTargets.size} itens permanentemente?",
+                            color = colors.textPrimary,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    },
+                    text = {
+                        Text(
+                            text = "Esta ação não pode ser desfeita. Os itens selecionados serão apagados definitivamente do dispositivo.",
+                            color = colors.textSecondary
+                        )
+                    },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                pendingPermanentDeleteItems = null
+                                scope.launch {
+                                    MediaRepository.deletePermanently(context, permTargets)
+                                    selectionMode = false
+                                    selectedIds.clear()
+                                    refreshMedia()
+                                    Toast.makeText(
+                                        context,
+                                        if (permTargets.size == 1) "Item excluído permanentemente" else "${permTargets.size} itens excluídos permanentemente",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                            }
+                        ) {
+                            Text("Excluir permanentemente", color = colors.galleryRose, fontWeight = FontWeight.Bold)
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { pendingPermanentDeleteItems = null }) {
+                            Text("Cancelar", color = colors.primaryBlue)
+                        }
+                    }
+                )
+            }
+
+            val pickerActionMode = albumActionMode
+            if (pickerActionMode != null && !showCreateAlbumDialog) {
+                val actionTargets = allMedia.filter { selectedIds.contains(it.id) }
+                AlertDialog(
+                    onDismissRequest = { albumActionMode = null },
+                    containerColor = colors.surfaceCard,
+                    shape = OneUIShapeMedium,
+                    title = {
+                        Text(
+                            text = if (pickerActionMode == "copy") "Copiar para álbum" else "Mover para álbum",
+                            color = colors.textPrimary,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    },
+                    text = {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 320.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            item(key = "create_new_album_row") {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(colors.primaryBlue.copy(alpha = 0.12f))
+                                        .clickable {
+                                            newAlbumName = ""
+                                            showCreateAlbumDialog = true
+                                        }
+                                        .padding(horizontal = 12.dp, vertical = 12.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.CreateNewFolder,
+                                        contentDescription = null,
+                                        tint = colors.primaryBlue,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Text(
+                                        text = "+ Criar novo álbum",
+                                        color = colors.primaryBlue,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
+                            items(albums, key = { it.id }) { album ->
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .clickable(enabled = actionTargets.isNotEmpty()) {
+                                            albumActionMode = null
+                                            selectionMode = false
+                                            selectedIds.clear()
+                                            if (pickerActionMode == "copy") {
+                                                scope.launch {
+                                                    val copied = MediaRepository.copyItemsToAlbum(
+                                                        context = context,
+                                                        items = actionTargets,
+                                                        targetAlbumId = album.id,
+                                                        targetAlbumName = album.name
+                                                    )
+                                                    customAlbumsVersion++
+                                                    refreshMedia()
+                                                    Toast.makeText(
+                                                        context,
+                                                        if (copied > 0) "$copied foto(s) copiada(s) para ${album.name}" else "Apenas fotos podem ser copiadas",
+                                                        Toast.LENGTH_SHORT
+                                                    ).show()
+                                                }
+                                            } else {
+                                                MediaRepository.moveItemsToAlbum(
+                                                    context = context,
+                                                    ids = actionTargets.map { it.id },
+                                                    targetAlbumId = album.id,
+                                                    targetAlbumName = album.name
+                                                )
+                                                customAlbumsVersion++
+                                                refreshMedia()
+                                                Toast.makeText(
+                                                    context,
+                                                    "${actionTargets.size} item(ns) movido(s) para ${album.name}",
+                                                    Toast.LENGTH_SHORT
+                                                ).show()
+                                            }
+                                        }
+                                        .padding(horizontal = 12.dp, vertical = 10.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.Folder,
+                                        contentDescription = null,
+                                        tint = colors.textPrimary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Text(
+                                        text = album.name,
+                                        color = colors.textPrimary,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Text(
+                                        text = "${album.items.size}",
+                                        color = colors.textSecondary,
+                                        fontSize = 12.sp
+                                    )
+                                }
+                            }
+                        }
+                    },
+                    confirmButton = {},
+                    dismissButton = {
+                        TextButton(onClick = { albumActionMode = null }) {
+                            Text("Cancelar", color = colors.textSecondary)
+                        }
+                    }
+                )
+            }
+
+            if (showCreateAlbumDialog) {
+                AlertDialog(
+                    onDismissRequest = { showCreateAlbumDialog = false },
+                    containerColor = colors.surfaceCard,
+                    shape = OneUIShapeMedium,
+                    title = {
+                        Text(
+                            text = "Criar novo álbum",
+                            color = colors.textPrimary,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    },
+                    text = {
+                        OutlinedTextField(
+                            value = newAlbumName,
+                            onValueChange = { newAlbumName = it },
+                            singleLine = true,
+                            label = { Text("Nome do álbum") },
+                            placeholder = { Text("Ex.: Viagem, Favoritas...") },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    },
+                    confirmButton = {
+                        TextButton(
+                            enabled = newAlbumName.trim().isNotEmpty(),
+                            onClick = {
+                                val (createdId, createdName) = MediaRepository.createCustomAlbum(context, newAlbumName)
+                                val actionTargets = allMedia.filter { selectedIds.contains(it.id) }
+                                val pendingMode = albumActionMode
+                                showCreateAlbumDialog = false
+                                albumActionMode = null
+                                newAlbumName = ""
+                                customAlbumsVersion++
+                                if (actionTargets.isNotEmpty() && (pendingMode != null || selectionMode)) {
+                                    selectionMode = false
+                                    selectedIds.clear()
+                                    if (pendingMode == "copy") {
+                                        scope.launch {
+                                            val copied = MediaRepository.copyItemsToAlbum(
+                                                context = context,
+                                                items = actionTargets,
+                                                targetAlbumId = createdId,
+                                                targetAlbumName = createdName
+                                            )
+                                            customAlbumsVersion++
+                                            refreshMedia()
+                                            Toast.makeText(
+                                                context,
+                                                "Álbum \"$createdName\" criado com $copied foto(s)!",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
+                                    } else {
+                                        MediaRepository.moveItemsToAlbum(
+                                            context = context,
+                                            ids = actionTargets.map { it.id },
+                                            targetAlbumId = createdId,
+                                            targetAlbumName = createdName
+                                        )
+                                        customAlbumsVersion++
+                                        refreshMedia()
+                                        Toast.makeText(
+                                            context,
+                                            "Álbum \"$createdName\" criado com ${actionTargets.size} item(ns)!",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                } else {
+                                    Toast.makeText(context, "Álbum \"$createdName\" criado!", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        ) {
+                            Text("Criar", color = colors.primaryBlue, fontWeight = FontWeight.Bold)
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showCreateAlbumDialog = false }) {
+                            Text("Cancelar", color = colors.textSecondary)
+                        }
+                    }
+                )
             }
 
             if (currentViewer != null) {
@@ -1643,18 +2123,28 @@ private fun AlbumsTabContent(
                                 .aspectRatio(1f)
                                 .clip(OneUIShapeMedium)
                                 .background(colors.surfaceCard)
-                                .border(0.5.dp, colors.divider, OneUIShapeMedium)
+                                .border(0.5.dp, colors.divider, OneUIShapeMedium),
+                            contentAlignment = Alignment.Center
                         ) {
-                            AsyncImage(
-                                model = ImageRequest.Builder(context)
-                                    .data(album.coverUri)
-                                    .size(380)
-                                    .crossfade(true)
-                                    .build(),
-                                contentDescription = album.name,
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier.fillMaxSize()
-                            )
+                            if (album.items.isEmpty()) {
+                                Icon(
+                                    imageVector = Icons.Outlined.Folder,
+                                    contentDescription = album.name,
+                                    tint = colors.primaryBlue,
+                                    modifier = Modifier.size(36.dp)
+                                )
+                            } else {
+                                AsyncImage(
+                                    model = ImageRequest.Builder(context)
+                                        .data(album.coverUri)
+                                        .size(380)
+                                        .crossfade(true)
+                                        .build(),
+                                    contentDescription = album.name,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
                             if (isCamera) {
                                 Surface(
                                     color = Color(0x77000000),
@@ -2369,10 +2859,84 @@ private fun OneUIFloatingCapsuleBottomBar(
 }
 
 @Composable
+private fun SelectionMoreMenu(
+    expanded: Boolean,
+    onDismiss: () -> Unit,
+    sourceItems: List<MediaItem>,
+    selectedIds: MutableList<Long>,
+    onMoveToAlbum: () -> Unit,
+    onCopyToAlbum: () -> Unit,
+    onCreateAlbumWithSelected: () -> Unit,
+    onPlaySlideshow: (List<MediaItem>) -> Unit
+) {
+    val colors = LocalOneUIColors.current
+    val hasSelection = selectedIds.isNotEmpty()
+    DropdownMenu(
+        expanded = expanded,
+        onDismissRequest = onDismiss,
+        modifier = Modifier
+            .background(colors.popupMenu, OneUIShapeMenu)
+            .clip(OneUIShapeMenu)
+    ) {
+        DropdownMenuItem(
+            enabled = hasSelection,
+            text = { Text("Mover para álbum...", color = colors.textPrimary, fontSize = 15.sp) },
+            leadingIcon = { Icon(Icons.Rounded.DriveFileMove, null, tint = colors.primaryBlue) },
+            onClick = {
+                onDismiss()
+                onMoveToAlbum()
+            }
+        )
+        DropdownMenuItem(
+            enabled = hasSelection,
+            text = { Text("Copiar para álbum...", color = colors.textPrimary, fontSize = 15.sp) },
+            leadingIcon = { Icon(Icons.Outlined.ContentCopy, null, tint = colors.textPrimary) },
+            onClick = {
+                onDismiss()
+                onCopyToAlbum()
+            }
+        )
+        DropdownMenuItem(
+            enabled = hasSelection,
+            text = { Text("Criar novo álbum com selecionadas", color = colors.textPrimary, fontSize = 15.sp) },
+            leadingIcon = { Icon(Icons.Rounded.CreateNewFolder, null, tint = colors.primaryBlue) },
+            onClick = {
+                onDismiss()
+                onCreateAlbumWithSelected()
+            }
+        )
+        DropdownMenuItem(
+            enabled = hasSelection,
+            text = { Text("Apresentação de slides", color = colors.textPrimary, fontSize = 15.sp) },
+            leadingIcon = { Icon(Icons.Rounded.Slideshow, null, tint = colors.textPrimary) },
+            onClick = {
+                onDismiss()
+                val photos = sourceItems.filter { selectedIds.contains(it.id) && !it.isVideo }
+                onPlaySlideshow(photos)
+            }
+        )
+        DropdownMenuItem(
+            enabled = sourceItems.isNotEmpty(),
+            text = { Text("Inverter seleção", color = colors.textPrimary, fontSize = 15.sp) },
+            leadingIcon = { Icon(Icons.Outlined.SelectAll, null, tint = colors.textPrimary) },
+            onClick = {
+                onDismiss()
+                val currentSet = selectedIds.toSet()
+                val inverted = sourceItems.map { it.id }.filterNot { it in currentSet }
+                selectedIds.clear()
+                selectedIds.addAll(inverted)
+            }
+        )
+    }
+}
+
+@Composable
 private fun SelectionBottomBar(
     selectedCount: Int,
     canCollage: Boolean,
+    isPrivateRoute: Boolean = false,
     onShare: () -> Unit,
+    onMoveToAlbum: () -> Unit,
     onFavorite: () -> Unit,
     onCollage: () -> Unit,
     onPrivate: () -> Unit,
@@ -2389,8 +2953,8 @@ private fun SelectionBottomBar(
                 modifier = Modifier
                     .fillMaxWidth()
                     .navigationBarsPadding()
-                    .height(62.dp)
-                    .padding(horizontal = 8.dp),
+                    .height(64.dp)
+                    .padding(horizontal = 4.dp),
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -2399,35 +2963,91 @@ private fun SelectionBottomBar(
                     label = "Enviar",
                     enabled = selectedCount > 0,
                     tint = colors.textPrimary,
-                    onClick = onShare
+                    onClick = onShare,
+                    modifier = Modifier.weight(1f)
+                )
+                SelectionActionButton(
+                    icon = Icons.Outlined.Folder,
+                    label = "Mover",
+                    enabled = selectedCount > 0,
+                    tint = colors.primaryBlue,
+                    onClick = onMoveToAlbum,
+                    modifier = Modifier.weight(1f)
                 )
                 SelectionActionButton(
                     icon = Icons.Outlined.FavoriteBorder,
                     label = "Favoritar",
                     enabled = selectedCount > 0,
                     tint = colors.galleryRose,
-                    onClick = onFavorite
+                    onClick = onFavorite,
+                    modifier = Modifier.weight(1f)
                 )
                 SelectionActionButton(
                     icon = Icons.Rounded.Dashboard,
                     label = "Colagem",
                     enabled = canCollage,
                     tint = colors.primaryBlue,
-                    onClick = onCollage
+                    onClick = onCollage,
+                    modifier = Modifier.weight(1f)
                 )
                 SelectionActionButton(
-                    icon = Icons.Rounded.Lock,
-                    label = "Privado",
+                    icon = if (isPrivateRoute) Icons.Rounded.LockOpen else Icons.Rounded.Lock,
+                    label = if (isPrivateRoute) "Abrir" else "Privado",
                     enabled = selectedCount > 0,
                     tint = colors.primaryBlue,
-                    onClick = onPrivate
+                    onClick = onPrivate,
+                    modifier = Modifier.weight(1f)
                 )
                 SelectionActionButton(
                     icon = Icons.Outlined.Delete,
                     label = "Excluir",
                     enabled = selectedCount > 0,
-                    tint = colors.textPrimary,
-                    onClick = onDelete
+                    tint = colors.galleryRose,
+                    onClick = onDelete,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TrashSelectionBottomBar(
+    selectedCount: Int,
+    onRestore: () -> Unit,
+    onDeleteForever: () -> Unit
+) {
+    val colors = LocalOneUIColors.current
+    Surface(
+        color = colors.bottomBar,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column {
+            HorizontalDivider(color = colors.divider, thickness = 0.5.dp)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .height(64.dp)
+                    .padding(horizontal = 24.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                SelectionActionButton(
+                    icon = Icons.Rounded.RestoreFromTrash,
+                    label = "Restaurar",
+                    enabled = selectedCount > 0,
+                    tint = colors.primaryBlue,
+                    onClick = onRestore,
+                    modifier = Modifier.weight(1f)
+                )
+                SelectionActionButton(
+                    icon = Icons.Outlined.DeleteForever,
+                    label = "Excluir",
+                    enabled = selectedCount > 0,
+                    tint = colors.galleryRose,
+                    onClick = onDeleteForever,
+                    modifier = Modifier.weight(1f)
                 )
             }
         }
@@ -2440,27 +3060,30 @@ private fun SelectionActionButton(
     label: String,
     enabled: Boolean,
     tint: Color,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val colors = LocalOneUIColors.current
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier
+        modifier = modifier
             .clip(RoundedCornerShape(14.dp))
             .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 18.dp, vertical = 6.dp)
+            .padding(horizontal = 4.dp, vertical = 6.dp)
     ) {
         Icon(
             imageVector = icon,
             contentDescription = label,
             tint = if (enabled) tint else colors.textSecondary.copy(alpha = 0.4f),
-            modifier = Modifier.size(22.dp)
+            modifier = Modifier.size(21.dp)
         )
         Spacer(modifier = Modifier.height(2.dp))
         Text(
             text = label,
             color = if (enabled) colors.textPrimary else colors.textSecondary.copy(alpha = 0.4f),
-            fontSize = 11.sp
+            fontSize = 10.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
         )
     }
 }

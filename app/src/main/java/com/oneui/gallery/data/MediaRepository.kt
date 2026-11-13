@@ -50,6 +50,8 @@ object MediaRepository {
     private const val KEY_PRIVATE = "private_ids"
     private const val KEY_PRIVATE_PIN = "private_pin"
     private const val KEY_DARK_MODE = "dark_mode"
+    private const val KEY_CUSTOM_ALBUMS = "custom_albums"
+    private const val KEY_ALBUM_OVERRIDES = "album_overrides"
 
     fun isDarkMode(context: Context): Boolean? {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -133,6 +135,97 @@ object MediaRepository {
             .apply()
     }
 
+    fun getCustomAlbums(context: Context): List<Pair<String, String>> {
+        val raw = getIdSet(context, KEY_CUSTOM_ALBUMS)
+        return raw.mapNotNull { entry ->
+            val sep = entry.indexOf('|')
+            if (sep <= 0 || sep >= entry.lastIndex) null
+            else entry.substring(0, sep) to entry.substring(sep + 1)
+        }.sortedBy { it.second.lowercase() }
+    }
+
+    fun createCustomAlbum(context: Context, rawName: String): Pair<String, String> {
+        val cleaned = rawName.replace("|", " ").trim().ifBlank { "Novo álbum" }
+        val existing = getCustomAlbums(context).firstOrNull {
+            it.second.equals(cleaned, ignoreCase = true)
+        }
+        if (existing != null) return existing
+        val id = "custom_${System.currentTimeMillis()}"
+        val set = getIdSet(context, KEY_CUSTOM_ALBUMS)
+        set.add("$id|$cleaned")
+        saveIdSet(context, KEY_CUSTOM_ALBUMS, set)
+        return id to cleaned
+    }
+
+    private fun getAlbumOverridesMap(context: Context): Map<Long, Pair<String, String>> {
+        val raw = getIdSet(context, KEY_ALBUM_OVERRIDES)
+        val map = mutableMapOf<Long, Pair<String, String>>()
+        raw.forEach { entry ->
+            val parts = entry.split('|', limit = 3)
+            if (parts.size == 3) {
+                val mediaId = parts[0].toLongOrNull()
+                if (mediaId != null && parts[1].isNotBlank() && parts[2].isNotBlank()) {
+                    map[mediaId] = parts[1] to parts[2]
+                }
+            }
+        }
+        return map
+    }
+
+    fun moveItemsToAlbum(
+        context: Context,
+        ids: List<Long>,
+        targetAlbumId: String,
+        targetAlbumName: String
+    ) {
+        if (ids.isEmpty()) return
+        val cleanName = targetAlbumName.replace("|", " ").trim().ifBlank { "Álbum" }
+        val idStrings = ids.map { it.toString() }.toSet()
+        val overrides = getIdSet(context, KEY_ALBUM_OVERRIDES)
+            .filterNot { entry -> entry.substringBefore('|') in idStrings }
+            .toMutableSet()
+        ids.forEach { id ->
+            overrides.add("$id|$targetAlbumId|$cleanName")
+        }
+        saveIdSet(context, KEY_ALBUM_OVERRIDES, overrides)
+
+        val customAlbums = getIdSet(context, KEY_CUSTOM_ALBUMS)
+        if (customAlbums.none { it.substringBefore('|') == targetAlbumId }) {
+            customAlbums.add("$targetAlbumId|$cleanName")
+            saveIdSet(context, KEY_CUSTOM_ALBUMS, customAlbums)
+        }
+    }
+
+    suspend fun copyItemsToAlbum(
+        context: Context,
+        items: List<MediaItem>,
+        targetAlbumId: String,
+        targetAlbumName: String
+    ): Int = withContext(Dispatchers.IO) {
+        val cleanName = targetAlbumName.replace("|", " ").trim().ifBlank { "Álbum" }
+        var copiedCount = 0
+        val newIds = mutableListOf<Long>()
+        items.filter { !it.isVideo }.forEach { item ->
+            val bmp = decodeSampledBitmap(context, item.uri, 2560) ?: return@forEach
+            val savedUri = saveBitmapToGallery(
+                context = context,
+                bitmap = bmp,
+                displayName = "Copia_${System.currentTimeMillis()}_${copiedCount}.jpg",
+                subFolder = cleanName,
+                dateTakenMs = System.currentTimeMillis()
+            )
+            bmp.recycle()
+            if (savedUri != null) {
+                copiedCount++
+                runCatching { ContentUris.parseId(savedUri) }.getOrNull()?.let { newIds.add(it) }
+            }
+        }
+        if (newIds.isNotEmpty()) {
+            moveItemsToAlbum(context, newIds, targetAlbumId, cleanName)
+        }
+        copiedCount
+    }
+
     suspend fun deletePermanently(context: Context, items: List<MediaItem>) = withContext(Dispatchers.IO) {
         val trashed = getIdSet(context, KEY_TRASHED)
         val favs = getIdSet(context, KEY_FAVORITES)
@@ -154,6 +247,7 @@ object MediaRepository {
         val favs = getIdSet(context, KEY_FAVORITES)
         val trashed = getIdSet(context, KEY_TRASHED)
         val privates = getIdSet(context, KEY_PRIVATE)
+        val albumOverrides = getAlbumOverridesMap(context)
         val result = mutableListOf<MediaItem>()
 
         val now = Calendar.getInstance()
@@ -219,6 +313,7 @@ object MediaRepository {
                         if (it > 0L) it else cursor.getLong(dateAddedCol) * 1000L
                     }
                     val uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
+                    val override = albumOverrides[id]
                     result.add(
                         MediaItem(
                             id = id,
@@ -229,8 +324,8 @@ object MediaRepository {
                             width = cursor.getInt(widthCol),
                             height = cursor.getInt(heightCol),
                             mimeType = cursor.getString(mimeCol) ?: "image/jpeg",
-                            bucketId = cursor.getString(bucketIdCol) ?: "default",
-                            bucketName = cursor.getString(bucketNameCol) ?: "Imagens",
+                            bucketId = override?.first ?: (cursor.getString(bucketIdCol) ?: "default"),
+                            bucketName = override?.second ?: (cursor.getString(bucketNameCol) ?: "Imagens"),
                             isVideo = false,
                             isFavorite = favs.contains(id.toString()),
                             isTrashed = trashed.contains(id.toString()),
@@ -283,6 +378,7 @@ object MediaRepository {
                         if (it > 0L) it else cursor.getLong(dateAddedCol) * 1000L
                     }
                     val uri = ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, id)
+                    val override = albumOverrides[id]
                     result.add(
                         MediaItem(
                             id = id,
@@ -293,8 +389,8 @@ object MediaRepository {
                             width = cursor.getInt(widthCol),
                             height = cursor.getInt(heightCol),
                             mimeType = cursor.getString(mimeCol) ?: "video/mp4",
-                            bucketId = cursor.getString(bucketIdCol) ?: "video",
-                            bucketName = cursor.getString(bucketNameCol) ?: "Vídeos",
+                            bucketId = override?.first ?: (cursor.getString(bucketIdCol) ?: "video"),
+                            bucketName = override?.second ?: (cursor.getString(bucketNameCol) ?: "Vídeos"),
                             duration = cursor.getLong(durationCol),
                             isVideo = true,
                             isFavorite = favs.contains(id.toString()),
@@ -310,8 +406,11 @@ object MediaRepository {
         result.sortedByDescending { it.dateTaken }
     }
 
-    fun buildAlbums(activeItems: List<MediaItem>): List<AlbumItem> {
-        return activeItems
+    fun buildAlbums(
+        activeItems: List<MediaItem>,
+        customAlbums: List<Pair<String, String>> = emptyList()
+    ): List<AlbumItem> {
+        val grouped = activeItems
             .groupBy { it.bucketId }
             .mapNotNull { (bucketId, items) ->
                 val sorted = items.sortedByDescending { it.dateTaken }
@@ -325,6 +424,25 @@ object MediaRepository {
                 )
             }
             .sortedByDescending { it.items.size }
+            .toMutableList()
+
+        customAlbums.forEach { (customId, customName) ->
+            val exists = grouped.any {
+                it.id == customId || it.name.equals(customName, ignoreCase = true)
+            }
+            if (!exists) {
+                grouped.add(
+                    AlbumItem(
+                        id = customId,
+                        name = customName,
+                        coverUri = Uri.EMPTY,
+                        items = emptyList(),
+                        videoCount = 0
+                    )
+                )
+            }
+        }
+        return grouped
     }
 
     fun buildStories(activeItems: List<MediaItem>): List<StoryItem> {

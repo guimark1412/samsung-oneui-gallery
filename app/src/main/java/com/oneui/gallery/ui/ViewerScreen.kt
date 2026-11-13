@@ -171,6 +171,7 @@ fun ViewerScreen(
     var showControls by remember { mutableStateOf(true) }
     var isInfoExpanded by remember { mutableStateOf(false) }
     var showPermanentDeleteDialog by remember { mutableStateOf(false) }
+    var showMoveToTrashDialog by remember { mutableStateOf(false) }
     var activeZoomScale by remember { mutableFloatStateOf(1f) }
 
     LaunchedEffect(pagerState.currentPage) {
@@ -764,7 +765,7 @@ fun ViewerScreen(
                                 icon = Icons.Outlined.Delete,
                                 description = "Lixeira",
                                 tint = Color.White,
-                                onClick = { onTrashOrRestore(currentItem) }
+                                onClick = { showMoveToTrashDialog = true }
                             )
                             ViewerIconAction(
                                 icon = Icons.Outlined.Info,
@@ -1125,6 +1126,38 @@ fun ViewerScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showPermanentDeleteDialog = false }) {
+                    Text("Cancelar", color = colors.primaryBlue)
+                }
+            }
+        )
+    }
+
+    if (showMoveToTrashDialog) {
+        AlertDialog(
+            onDismissRequest = { showMoveToTrashDialog = false },
+            containerColor = colors.surfaceCard,
+            shape = OneUIShapeMedium,
+            title = {
+                Text("Mover para a Lixeira?", color = colors.textPrimary, fontWeight = FontWeight.SemiBold)
+            },
+            text = {
+                Text(
+                    "Este item será movido para a Lixeira e poderá ser restaurado depois.",
+                    color = colors.textSecondary
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showMoveToTrashDialog = false
+                        onTrashOrRestore(currentItem)
+                    }
+                ) {
+                    Text("Mover para a Lixeira", color = colors.galleryRose, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showMoveToTrashDialog = false }) {
                     Text("Cancelar", color = colors.primaryBlue)
                 }
             }
