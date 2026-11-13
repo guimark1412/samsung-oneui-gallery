@@ -121,28 +121,32 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.unit.toSize
-import androidx.compose.ui.zIndex
+import androidx.compose.animation.core.AnimationVector1D
+import androidx.compose.animation.core.VisibilityThreshold
+import androidx.compose.animation.core.animate
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.snapshots.Snapshot
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.withContext
 import androidx.core.content.ContextCompat
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
@@ -200,41 +204,52 @@ private fun groupMediaByTimelineScale(
     val monthFmt = SimpleDateFormat("MMMM 'de' yyyy", ptBr)
 
     val groups = LinkedHashMap<String, MutableList<MediaItem>>()
+    // Cache de rótulos por "balde" de data: formata cada dia/semana/mês uma única vez
+    val labelCache = HashMap<Int, String>()
     val cal = Calendar.getInstance()
     val weekStartCal = Calendar.getInstance()
     val weekEndCal = Calendar.getInstance()
+    val nowMs = System.currentTimeMillis()
 
     for (item in items) {
-        val ts = if (item.dateTaken > 0L) item.dateTaken else System.currentTimeMillis()
+        val ts = if (item.dateTaken > 0L) item.dateTaken else nowMs
         cal.timeInMillis = ts
         val year = cal.get(Calendar.YEAR)
         val dayOfYear = cal.get(Calendar.DAY_OF_YEAR)
         val week = cal.get(Calendar.WEEK_OF_YEAR)
+        val bucket = when (scale) {
+            TimelineScale.DAY -> year * 1000 + dayOfYear
+            TimelineScale.WEEK -> year * 100 + week
+            TimelineScale.MONTH -> year * 100 + cal.get(Calendar.MONTH)
+            TimelineScale.YEAR -> year
+        }
 
-        val key = when (scale) {
-            TimelineScale.DAY -> when {
-                year == curYear && dayOfYear == curDayOfYear -> "Hoje"
-                year == curYear && dayOfYear == curDayOfYear - 1 -> "Ontem"
-                year == curYear -> daySameYearFmt.format(Date(ts))
-                else -> dayOtherYearFmt.format(Date(ts))
-            }
-            TimelineScale.WEEK -> {
-                if (year == curYear && week == curWeek) {
-                    "Esta semana"
-                } else if (year == curYear && week == curWeek - 1) {
-                    "Semana passada"
-                } else {
-                    weekStartCal.timeInMillis = ts
-                    weekStartCal.set(Calendar.DAY_OF_WEEK, weekStartCal.firstDayOfWeek)
-                    weekEndCal.timeInMillis = weekStartCal.timeInMillis
-                    weekEndCal.add(Calendar.DAY_OF_YEAR, 6)
-                    val s = weekBoundFmt.format(weekStartCal.time)
-                    val e = weekBoundFmt.format(weekEndCal.time)
-                    "Semana de $s – $e"
+        val key = labelCache.getOrPut(bucket) {
+            when (scale) {
+                TimelineScale.DAY -> when {
+                    year == curYear && dayOfYear == curDayOfYear -> "Hoje"
+                    year == curYear && dayOfYear == curDayOfYear - 1 -> "Ontem"
+                    year == curYear -> daySameYearFmt.format(Date(ts))
+                    else -> dayOtherYearFmt.format(Date(ts))
                 }
+                TimelineScale.WEEK -> {
+                    if (year == curYear && week == curWeek) {
+                        "Esta semana"
+                    } else if (year == curYear && week == curWeek - 1) {
+                        "Semana passada"
+                    } else {
+                        weekStartCal.timeInMillis = ts
+                        weekStartCal.set(Calendar.DAY_OF_WEEK, weekStartCal.firstDayOfWeek)
+                        weekEndCal.timeInMillis = weekStartCal.timeInMillis
+                        weekEndCal.add(Calendar.DAY_OF_YEAR, 6)
+                        val s = weekBoundFmt.format(weekStartCal.time)
+                        val e = weekBoundFmt.format(weekEndCal.time)
+                        "Semana de $s – $e"
+                    }
+                }
+                TimelineScale.MONTH -> monthFmt.format(Date(ts)).replaceFirstChar { it.titlecase(ptBr) }
+                TimelineScale.YEAR -> year.toString()
             }
-            TimelineScale.MONTH -> monthFmt.format(Date(ts)).replaceFirstChar { it.titlecase(ptBr) }
-            TimelineScale.YEAR -> year.toString()
         }
         groups.getOrPut(key) { mutableListOf() }.add(item)
     }
@@ -1135,26 +1150,34 @@ private fun OneUICircularGlassAction(
     }
 }
 
-private class SlotRectHolder(var rect: Rect? = null)
+private const val GridFlipSpringDamping = 0.88f
+private const val GridFlipSpringStiffness = 380f
 
-private class GridFlipTracker {
-    val currentBounds = HashMap<Long, Rect>()
-    val visualBounds = HashMap<Long, Rect>()
-    val previousBounds = HashMap<Long, Rect>()
+/**
+ * Estado leve da transição de escala da grade (Dia/Semana/Mês/Ano).
+ *
+ * Anti-stuttering:
+ * - Posição: `animateItemPlacement` nativo da LazyGrid (fase de layout, sem 1 frame de atraso).
+ * - Tamanho: uma única escala por geração aplicada no `graphicsLayer` (fase de desenho),
+ *   sem rastrear coordenadas por item, sem HashMaps por frame e sem alocações por frame.
+ * - Nenhum valor animado é lido na composição, então a grade NÃO recompõe a cada frame.
+ */
+private class GridScaleTransition {
     var activeScale: TimelineScale? = null
-    var isZoomingOut: Boolean = false
     var generation: Int = 0
+    var startRatio: Float = 1f
+    var isZoomingOut: Boolean = false
+    var anim: Animatable<Float, AnimationVector1D>? = null
 
     fun onScaleSync(newScale: TimelineScale) {
         val prev = activeScale
         if (prev != null && prev != newScale) {
+            // Lê o progresso atual sem assinar o estado (evita recomposição por frame)
+            val p = Snapshot.withoutReadObservation { anim?.value ?: 1f }.coerceIn(0f, 1f)
+            val currentVisual = startRatio + (1f - startRatio) * p
+            // Largura da célula ∝ 1/colunas → tamanho antigo / novo = colunasNovas / colunasAntigas
+            startRatio = (currentVisual * newScale.columns / prev.columns).coerceIn(0.4f, 2.5f)
             isZoomingOut = newScale.ordinal > prev.ordinal
-            previousBounds.clear()
-            if (visualBounds.isNotEmpty()) {
-                previousBounds.putAll(visualBounds)
-            } else {
-                previousBounds.putAll(currentBounds)
-            }
             generation++
         }
         activeScale = newScale
@@ -1175,99 +1198,137 @@ private fun MediaGridContent(
 ) {
     val colors = LocalOneUIColors.current
     val gridState = rememberLazyGridState()
+    val scope = rememberCoroutineScope()
     val indexById = remember(items) {
         items.mapIndexed { index, item -> item.id to index }.toMap()
     }
-    var livePinchFactor by remember { mutableFloatStateOf(1f) }
-    val livePinchVisualScale by animateFloatAsState(
-        targetValue = (1f + (livePinchFactor - 1f) * 0.14f).coerceIn(0.90f, 1.10f),
-        animationSpec = spring(dampingRatio = 0.78f, stiffness = Spring.StiffnessMedium),
-        label = "pinch_live_scale"
-    )
+    // O(1) por item em vez de List.contains (O(n)) em cada célula
+    val selectedSet by remember(selectedIds) { derivedStateOf { selectedIds.toHashSet() } }
 
-    val flipTracker = remember { GridFlipTracker() }
-    flipTracker.onScaleSync(timelineScale)
-
-    val flipAnim = remember(flipTracker.generation) {
-        Animatable(if (flipTracker.generation == 0) 1f else 0f)
+    // ---- Agrupamentos: escala atual síncrona, demais pré-calculadas em background ----
+    val groupingCache = remember(items) { HashMap<TimelineScale, List<Pair<String, List<MediaItem>>>>() }
+    val grouped = groupingCache.getOrPut(timelineScale) { groupMediaByTimelineScale(items, timelineScale) }
+    LaunchedEffect(items) {
+        val missing = TimelineScale.entries.filter { !groupingCache.containsKey(it) }
+        if (missing.isNotEmpty()) {
+            val computed = withContext(Dispatchers.Default) {
+                missing.associateWith { groupMediaByTimelineScale(items, it) }
+            }
+            computed.forEach { (k, v) -> if (!groupingCache.containsKey(k)) groupingCache[k] = v }
+        }
     }
-    LaunchedEffect(flipTracker.generation) {
-        if (flipTracker.generation > 0) {
+
+    // ---- Transição de escala ----
+    val transition = remember { GridScaleTransition() }
+    transition.onScaleSync(timelineScale)
+    val generation = transition.generation
+    val flipAnim = remember(generation) { Animatable(if (generation == 0) 1f else 0f) }
+    transition.anim = flipAnim
+    LaunchedEffect(generation) {
+        if (generation > 0) {
             flipAnim.animateTo(
                 targetValue = 1f,
                 animationSpec = spring(
-                    dampingRatio = 0.84f,
-                    stiffness = 300f
+                    dampingRatio = GridFlipSpringDamping,
+                    stiffness = GridFlipSpringStiffness
                 )
             )
         }
     }
-
-    val spacing by animateDpAsState(
-        targetValue = timelineScale.spacingDp.dp,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioNoBouncy,
-            stiffness = Spring.StiffnessMediumLow
-        ),
-        label = "grid_spacing"
-    )
-    val grouped = remember(items, timelineScale) {
-        groupMediaByTimelineScale(items, timelineScale)
+    val startRatio = transition.startRatio
+    val isZoomingOut = transition.isZoomingOut
+    val flipScale: () -> Float = remember(flipAnim, startRatio) {
+        { startRatio + (1f - startRatio) * flipAnim.value }
     }
+    val headerProgress: () -> Float = remember(flipAnim) {
+        { flipAnim.value.coerceIn(0f, 1f) }
+    }
+    val placementSpec = remember {
+        spring(
+            dampingRatio = GridFlipSpringDamping,
+            stiffness = GridFlipSpringStiffness,
+            visibilityThreshold = IntOffset.VisibilityThreshold
+        )
+    }
+
+    // ---- Pinça: valor visual lido apenas na fase de desenho ----
+    val pinchVisual = remember { mutableFloatStateOf(1f) }
+    val releaseJob = remember { arrayOfNulls<Job>(1) }
+    val currentScale by rememberUpdatedState(timelineScale)
+    val currentOnScaleChange by rememberUpdatedState(onTimelineScaleChange)
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .pointerInput(timelineScale) {
+            .pointerInput(Unit) {
                 awaitEachGesture {
                     awaitFirstDown(requireUnconsumed = false)
+                    var accum = 1f
                     try {
                         do {
                             val event = awaitPointerEvent()
                             if (event.changes.count { it.pressed } >= 2) {
                                 val zoom = event.calculateZoom()
                                 if (zoom != 1f) {
-                                    livePinchFactor = (livePinchFactor * zoom).coerceIn(0.65f, 1.45f)
-                                    if (livePinchFactor > 1.20f && timelineScale.ordinal > 0) {
-                                        onTimelineScaleChange(TimelineScale.entries[timelineScale.ordinal - 1])
-                                        livePinchFactor = 1f
-                                    } else if (livePinchFactor < 0.82f && timelineScale.ordinal < TimelineScale.entries.lastIndex) {
-                                        onTimelineScaleChange(TimelineScale.entries[timelineScale.ordinal + 1])
-                                        livePinchFactor = 1f
+                                    releaseJob[0]?.cancel()
+                                    accum = (accum * zoom).coerceIn(0.65f, 1.45f)
+                                    val s = currentScale
+                                    if (accum > 1.20f && s.ordinal > 0) {
+                                        currentOnScaleChange(TimelineScale.entries[s.ordinal - 1])
+                                        accum = 1f
+                                    } else if (accum < 0.82f && s.ordinal < TimelineScale.entries.lastIndex) {
+                                        currentOnScaleChange(TimelineScale.entries[s.ordinal + 1])
+                                        accum = 1f
                                     }
+                                    pinchVisual.floatValue = 1f + (accum - 1f) * 0.14f
                                     event.changes.forEach { if (it.positionChanged()) it.consume() }
                                 }
-                            } else if (livePinchFactor != 1f) {
-                                livePinchFactor = 1f
                             }
                         } while (event.changes.any { it.pressed })
                     } finally {
-                        livePinchFactor = 1f
+                        val from = pinchVisual.floatValue
+                        if (from != 1f) {
+                            releaseJob[0] = scope.launch {
+                                animate(
+                                    initialValue = from,
+                                    targetValue = 1f,
+                                    animationSpec = spring(
+                                        dampingRatio = 0.8f,
+                                        stiffness = Spring.StiffnessMedium
+                                    )
+                                ) { v, _ -> pinchVisual.floatValue = v }
+                            }
+                        }
                     }
                 }
+            }
+            .graphicsLayer {
+                val s = pinchVisual.floatValue
+                scaleX = s
+                scaleY = s
             }
     ) {
         LazyVerticalGrid(
             state = gridState,
             columns = GridCells.Fixed(timelineScale.columns),
             contentPadding = PaddingValues(start = 6.dp, end = 6.dp, top = 6.dp, bottom = 112.dp),
-            horizontalArrangement = Arrangement.spacedBy(spacing),
-            verticalArrangement = Arrangement.spacedBy(spacing),
+            horizontalArrangement = Arrangement.spacedBy(timelineScale.spacingDp.dp),
+            verticalArrangement = Arrangement.spacedBy(timelineScale.spacingDp.dp),
             modifier = Modifier.fillMaxSize()
         ) {
             grouped.forEach { (dateLabel, groupItems) ->
                 item(
                     span = { GridItemSpan(timelineScale.columns) },
-                    key = "header_${timelineScale.name}_$dateLabel"
+                    key = "header_${timelineScale.name}_$dateLabel",
+                    contentType = "header"
                 ) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .zIndex(0f)
                             .graphicsLayer {
-                                val p = flipAnim.value.coerceIn(0f, 1f)
+                                val p = headerProgress()
                                 alpha = p
-                                translationY = (1f - p) * (if (flipTracker.isZoomingOut) 18f else -18f)
+                                translationY = (1f - p) * (if (isZoomingOut) 18f else -18f)
                             }
                             .padding(start = 10.dp, end = 10.dp, top = 16.dp, bottom = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -1283,7 +1344,7 @@ private fun MediaGridContent(
                             modifier = Modifier.weight(1f)
                         )
                         if (selectionMode) {
-                            val allGroupSelected = groupItems.all { selectedIds.contains(it.id) }
+                            val allGroupSelected = groupItems.all { selectedSet.contains(it.id) }
                             Text(
                                 text = if (allGroupSelected) "Desmarcar" else "Selecionar",
                                 color = colors.primaryBlue,
@@ -1291,9 +1352,9 @@ private fun MediaGridContent(
                                 fontWeight = FontWeight.Medium,
                                 modifier = Modifier.clickable {
                                     if (allGroupSelected) {
-                                        groupItems.forEach { if (selectedIds.contains(it.id)) onToggleSelect(it.id) }
+                                        groupItems.forEach { if (selectedSet.contains(it.id)) onToggleSelect(it.id) }
                                     } else {
-                                        groupItems.forEach { if (!selectedIds.contains(it.id)) onToggleSelect(it.id) }
+                                        groupItems.forEach { if (!selectedSet.contains(it.id)) onToggleSelect(it.id) }
                                     }
                                 }
                             )
@@ -1314,21 +1375,29 @@ private fun MediaGridContent(
                     }
                 }
 
-                items(groupItems, key = { it.id }) { media ->
+                items(
+                    items = groupItems,
+                    key = { it.id },
+                    contentType = { "photo" }
+                ) { media ->
                     OneUIGridThumbnail(
                         media = media,
                         cornerDp = timelineScale.cornerDp,
-                        isSelected = selectedIds.contains(media.id),
+                        isSelected = selectedSet.contains(media.id),
                         selectionMode = selectionMode,
-                        flipTracker = flipTracker,
-                        flipProgress = flipAnim.value,
-                        pinchScale = livePinchVisualScale,
                         onClick = {
                             if (selectionMode) onToggleSelect(media.id)
                             else onItemClick(indexById[media.id] ?: 0)
                         },
                         onLongClick = { onEnterSelection(media.id) },
-                        modifier = Modifier.zIndex(1f)
+                        modifier = Modifier
+                            .animateItemPlacement(placementSpec)
+                            .graphicsLayer {
+                                val s = flipScale()
+                                scaleX = s
+                                scaleY = s
+                                transformOrigin = TransformOrigin(0f, 0f)
+                            }
                     )
                 }
             }
@@ -1343,16 +1412,20 @@ private fun OneUIGridThumbnail(
     cornerDp: Int,
     isSelected: Boolean,
     selectionMode: Boolean,
-    flipTracker: GridFlipTracker,
-    flipProgress: Float,
-    pinchScale: Float,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val colors = LocalOneUIColors.current
-    val slotRectHolder = remember(media.id) { SlotRectHolder() }
+    // Request estável: evita realocar/reiniciar o carregamento a cada recomposição
+    val request = remember(media.uri) {
+        ImageRequest.Builder(context)
+            .data(media.uri)
+            .size(320)
+            .crossfade(true)
+            .build()
+    }
 
     val shrinkScale by animateFloatAsState(
         targetValue = if (selectionMode && isSelected) 0.86f else 1f,
@@ -1370,20 +1443,11 @@ private fun OneUIGridThumbnail(
         ),
         label = "oneui_select_corner"
     )
+    val shape = RoundedCornerShape(cornerRadius)
 
     Box(
         modifier = modifier
             .aspectRatio(1f)
-            .onGloballyPositioned { coords ->
-                if (coords.isAttached) {
-                    val rect = Rect(coords.positionInRoot(), coords.size.toSize())
-                    slotRectHolder.rect = rect
-                    flipTracker.currentBounds[media.id] = rect
-                    if (flipProgress >= 0.999f) {
-                        flipTracker.visualBounds[media.id] = rect
-                    }
-                }
-            }
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = onLongClick
@@ -1393,61 +1457,15 @@ private fun OneUIGridThumbnail(
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer {
-                    val p = flipProgress.coerceIn(0f, 1f)
-                    val inv = 1f - p
-                    val newRect = slotRectHolder.rect
-                    val oldRect = flipTracker.previousBounds[media.id]
-
-                    if (newRect != null && newRect.width > 0f && newRect.height > 0f && inv > 0.001f) {
-                        if (oldRect != null) {
-                            val dx = (oldRect.center.x - newRect.center.x) * inv
-                            val dy = (oldRect.center.y - newRect.center.y) * inv
-                            val sx = 1f + ((oldRect.width / newRect.width) - 1f) * inv
-                            val sy = 1f + ((oldRect.height / newRect.height) - 1f) * inv
-                            translationX = dx
-                            translationY = dy
-                            scaleX = shrinkScale * pinchScale * sx
-                            scaleY = shrinkScale * pinchScale * sy
-                            alpha = 1f
-
-                            val curW = newRect.width * sx
-                            val curH = newRect.height * sy
-                            val curCx = newRect.center.x + dx
-                            val curCy = newRect.center.y + dy
-                            flipTracker.visualBounds[media.id] = Rect(
-                                offset = Offset(curCx - curW / 2f, curCy - curH / 2f),
-                                size = Size(curW, curH)
-                            )
-                        } else {
-                            val dy = (if (flipTracker.isZoomingOut) 160f else -100f) * inv
-                            val s = 1f + ((if (flipTracker.isZoomingOut) 1.22f else 0.82f) - 1f) * inv
-                            translationX = 0f
-                            translationY = dy
-                            scaleX = shrinkScale * pinchScale * s
-                            scaleY = shrinkScale * pinchScale * s
-                            alpha = (0.2f + 0.8f * p).coerceIn(0f, 1f)
-                        }
-                    } else {
-                        translationX = 0f
-                        translationY = 0f
-                        scaleX = shrinkScale * pinchScale
-                        scaleY = shrinkScale * pinchScale
-                        alpha = 1f
-                        if (newRect != null) {
-                            flipTracker.visualBounds[media.id] = newRect
-                        }
-                    }
+                    scaleX = shrinkScale
+                    scaleY = shrinkScale
                 }
-                .clip(RoundedCornerShape(cornerRadius))
+                .clip(shape)
                 .background(colors.surfaceCard)
-                .border(0.4.dp, colors.floatingBorder.copy(alpha = 0.35f), RoundedCornerShape(cornerRadius))
+                .border(0.4.dp, colors.floatingBorder.copy(alpha = 0.35f), shape)
         ) {
             AsyncImage(
-                model = ImageRequest.Builder(context)
-                    .data(media.uri)
-                    .size(320)
-                    .crossfade(true)
-                    .build(),
+                model = request,
                 contentDescription = media.name,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()

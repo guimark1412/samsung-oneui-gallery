@@ -11,8 +11,8 @@ android {
         applicationId = "com.oneui.gallery"
         minSdk = 26
         targetSdk = 34
-        versionCode = 7
-        versionName = "1.5.1"
+        versionCode = 8
+        versionName = "1.5.2"
 
         vectorDrawables {
             useSupportLibrary = true
@@ -21,7 +21,11 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // R8 + shrink: código Compose otimizado (debug builds são muito mais lentos e travam)
+            isMinifyEnabled = true
+            isShrinkResources = true
+            // Assina com a chave de debug para permitir instalar/atualizar o APK diretamente
+            signingConfig = signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -66,4 +70,6 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
     implementation("io.coil-kt:coil-compose:2.6.0")
     implementation("io.coil-kt:coil-video:2.6.0")
+    // Instala os Baseline Profiles do Compose em APKs sideload (compilação AOT dos caminhos quentes)
+    implementation("androidx.profileinstaller:profileinstaller:1.3.1")
 }
