@@ -6,6 +6,7 @@ import android.text.format.Formatter
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.spring
@@ -120,7 +121,9 @@ import com.oneui.gallery.model.MediaItem
 import com.oneui.gallery.ui.theme.LocalOneUIColors
 import com.oneui.gallery.ui.theme.OneUIShapeLarge
 import com.oneui.gallery.ui.theme.OneUIShapeMedium
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -175,10 +178,13 @@ fun ViewerScreen(
     var realDiagnostics by remember(currentItem.id) { mutableStateOf<ImageDiagnostics?>(null) }
     LaunchedEffect(currentItem.id, isInfoExpanded) {
         if (!currentItem.isVideo && isInfoExpanded && realDiagnostics == null) {
-            val sample = MediaRepository.decodeBitmapForEditing(context, currentItem.uri, 512)
-            if (sample != null) {
-                realDiagnostics = PixelAiEngine.analyzeBitmap(sample)
-                sample.recycle()
+            realDiagnostics = withContext(Dispatchers.Default) {
+                val sample = MediaRepository.decodeBitmapForEditing(context, currentItem.uri, 512)
+                if (sample != null) {
+                    val diag = PixelAiEngine.analyzeBitmap(sample)
+                    sample.recycle()
+                    diag
+                } else null
             }
         }
     }
@@ -196,25 +202,50 @@ fun ViewerScreen(
         label = "viewer_corner"
     )
 
-    Box(modifier = Modifier.fillMaxSize()) {
-    Column(
+    val infoAnim = remember { Animatable(0f) }
+    LaunchedEffect(isInfoExpanded) {
+        infoAnim.animateTo(
+            targetValue = if (isInfoExpanded) 1f else 0f,
+            animationSpec = spring(
+                dampingRatio = Spring.DampingRatioNoBouncy,
+                stiffness = Spring.StiffnessMediumLow
+            )
+        )
+    }
+
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
-            .background(if (isInfoExpanded) colors.background else Color.Black)
+            .background(Color.Black)
     ) {
-        // Top Photo Pager Area (100% fullscreen normally, smoothly shrinks to ~42% when swiped up!)
+        val totalHeightPx = constraints.maxHeight.toFloat().coerceAtLeast(1f)
+        val sheetHeightDp = maxHeight * 0.56f
+        val sheetHeightPx = totalHeightPx * 0.56f
+
         Box(
             modifier = Modifier
-                .weight(if (isInfoExpanded) 0.42f else 1f)
-                .fillMaxWidth()
-                .then(if (isInfoExpanded) Modifier.statusBarsPadding().padding(top = 8.dp, bottom = 6.dp) else Modifier)
-        ) {
+                .fillMaxSize()
+                .graphicsLayer {
+                    alpha = infoAnim.value.coerceIn(0f, 1f)
+                }
+                .background(colors.background)
+        )
+
+        // Photo Pager Area (fills screen; shifts & scales smoothly on draw phase when info opens/closes)
+        Box(modifier = Modifier.fillMaxSize()) {
             HorizontalPager(
                 state = pagerState,
                 userScrollEnabled = activeZoomScale <= 1.04f,
                 pageSpacing = 12.dp,
                 modifier = Modifier
                     .fillMaxSize()
+                    .graphicsLayer {
+                        val p = infoAnim.value.coerceIn(0f, 1f)
+                        translationY = -sheetHeightPx * 0.44f * p
+                        val s = 1f - 0.14f * p
+                        scaleX = s
+                        scaleY = s
+                    }
                     .padding(horizontal = previewPaddingH)
                     .clip(RoundedCornerShape(previewCorner))
             ) { page ->
@@ -328,7 +359,7 @@ fun ViewerScreen(
                             .crossfade(true)
                             .build(),
                         contentDescription = media.name,
-                        contentScale = if (isInfoExpanded) ContentScale.Crop else ContentScale.Fit,
+                        contentScale = ContentScale.Fit,
                         modifier = Modifier
                             .fillMaxSize()
                             .graphicsLayer {
@@ -439,34 +470,6 @@ fun ViewerScreen(
                         .navigationBarsPadding()
                         .padding(top = 12.dp, bottom = 10.dp)
                 ) {
-                    // Subtle One UI 7/8 Swipe-Up Pill Hint
-                    Surface(
-                        onClick = { isInfoExpanded = true },
-                        shape = RoundedCornerShape(16.dp),
-                        color = Color(0x44FFFFFF)
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.KeyboardArrowUp,
-                                contentDescription = null,
-                                tint = Color(0xEEFFFFFF),
-                                modifier = Modifier.size(15.dp)
-                            )
-                            Spacer(modifier = Modifier.width(3.dp))
-                            Text(
-                                text = "Detalhes",
-                                color = Color(0xEEFFFFFF),
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Medium
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
                     if (items.size > 1) {
                         LazyRow(
                             state = filmstripState,
@@ -584,32 +587,71 @@ fun ViewerScreen(
             }
         }
 
-        // One UI 7 / 8 Swipe-Up Interactive Info & Galaxy AI Sheet (bottom 58% when expanded)
-        AnimatedVisibility(
-            visible = isInfoExpanded,
-            enter = expandVertically(expandFrom = Alignment.Bottom) + fadeIn(),
-            exit = shrinkVertically(shrinkTowards = Alignment.Bottom) + fadeOut(),
-            modifier = Modifier
-                .weight(0.58f)
-                .fillMaxWidth()
-        ) {
+        // One UI Swipe-Up Interactive Info Sheet (bottom 56%, continuous spring slide + drag)
+        if (isInfoExpanded || infoAnim.value > 0.001f) {
             Surface(
                 color = colors.surfaceCard,
                 shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
                 modifier = Modifier
-                    .fillMaxSize()
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .height(sheetHeightDp)
+                    .graphicsLayer {
+                        val p = infoAnim.value.coerceIn(0f, 1f)
+                        translationY = sheetHeightPx * (1f - p)
+                        alpha = (p * 1.25f).coerceIn(0f, 1f)
+                    }
                     .navigationBarsPadding()
             ) {
                 Column(modifier = Modifier.fillMaxSize()) {
-                    // Drag handle header (swipe down or tap arrow to collapse)
+                    // Drag handle header (interactive vertical drag down or tap arrow to collapse)
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .pointerInput(Unit) {
-                                detectVerticalDragGestures { _, dragAmount ->
-                                    if (dragAmount > 22f) isInfoExpanded = false
-                                }
+                            .pointerInput(sheetHeightPx) {
+                                detectVerticalDragGestures(
+                                    onDragEnd = {
+                                        if (infoAnim.value < 0.82f) {
+                                            isInfoExpanded = false
+                                            scope.launch {
+                                                infoAnim.animateTo(
+                                                    targetValue = 0f,
+                                                    animationSpec = spring(
+                                                        dampingRatio = Spring.DampingRatioNoBouncy,
+                                                        stiffness = Spring.StiffnessMediumLow
+                                                    )
+                                                )
+                                            }
+                                        } else {
+                                            scope.launch {
+                                                infoAnim.animateTo(
+                                                    targetValue = 1f,
+                                                    animationSpec = spring(
+                                                        dampingRatio = Spring.DampingRatioNoBouncy,
+                                                        stiffness = Spring.StiffnessMediumLow
+                                                    )
+                                                )
+                                            }
+                                        }
+                                    },
+                                    onDragCancel = {
+                                        scope.launch {
+                                            infoAnim.animateTo(
+                                                targetValue = if (isInfoExpanded) 1f else 0f,
+                                                animationSpec = spring(
+                                                    dampingRatio = Spring.DampingRatioNoBouncy,
+                                                    stiffness = Spring.StiffnessMediumLow
+                                                )
+                                            )
+                                        }
+                                    },
+                                    onVerticalDrag = { change, dragAmount ->
+                                        change.consume()
+                                        val next = (infoAnim.value - (dragAmount / sheetHeightPx)).coerceIn(0f, 1f)
+                                        scope.launch { infoAnim.snapTo(next) }
+                                    }
+                                )
                             }
                             .padding(top = 10.dp, bottom = 6.dp, start = 20.dp, end = 20.dp)
                     ) {
@@ -796,7 +838,6 @@ fun ViewerScreen(
                 }
             }
         }
-    }
     }
 
     if (showPermanentDeleteDialog) {
