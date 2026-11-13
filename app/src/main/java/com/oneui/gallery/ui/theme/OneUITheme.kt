@@ -52,6 +52,8 @@ data class OneUIColorPalette(
     val background: Color,
     val surfaceCard: Color,
     val surfaceElevated: Color,
+    val popupMenu: Color,
+    val floatingPill: Color,
     val primaryBlue: Color,
     val galleryRose: Color,
     val textPrimary: Color,
@@ -66,35 +68,40 @@ val DarkOneUIColors = OneUIColorPalette(
     background = Color(0xFF000000),
     surfaceCard = Color(0xFF17171A),
     surfaceElevated = Color(0xFF242429),
+    popupMenu = Color(0xFF26262B),
+    floatingPill = Color(0xE6222226),
     primaryBlue = Color(0xFF387AFF),
     galleryRose = Color(0xFFF53855),
     textPrimary = Color(0xFFFAFAFC),
     textSecondary = Color(0xFF8E8E93),
     divider = Color(0xFF2C2C2E),
-    bottomBar = Color(0xF20D0D0F),
-    selectionScrim = Color(0x55387AFF)
+    bottomBar = Color(0xEB0B0B0D),
+    selectionScrim = Color(0x38387AFF)
 )
 
 val LightOneUIColors = OneUIColorPalette(
     isDark = false,
-    background = Color(0xFFF2F2F7),
+    background = Color(0xFFF6F6F8),
     surfaceCard = Color(0xFFFFFFFF),
-    surfaceElevated = Color(0xFFE9E9EF),
-    primaryBlue = Color(0xFF0381FE),
+    surfaceElevated = Color(0xFFEBEBF0),
+    popupMenu = Color(0xFFFCFCFE),
+    floatingPill = Color(0xEBEEEEF2),
+    primaryBlue = Color(0xFF0072DE),
     galleryRose = Color(0xFFF53855),
-    textPrimary = Color(0xFF111114),
+    textPrimary = Color(0xFF0F0F12),
     textSecondary = Color(0xFF6E6E73),
-    divider = Color(0xFFE0E0E5),
-    bottomBar = Color(0xF2F7F7FA),
-    selectionScrim = Color(0x440381FE)
+    divider = Color(0xFFE2E2E8),
+    bottomBar = Color(0xEBFAFAFC),
+    selectionScrim = Color(0x300072DE)
 )
 
 val LocalOneUIColors = staticCompositionLocalOf { DarkOneUIColors }
 
 val OneUIShapeLarge = RoundedCornerShape(26.dp)
-val OneUIShapeMedium = RoundedCornerShape(18.dp)
-val OneUIShapeSmall = RoundedCornerShape(8.dp)
-val OneUIShapeGridDense = RoundedCornerShape(2.dp)
+val OneUIShapeMenu = RoundedCornerShape(22.dp)
+val OneUIShapeMedium = RoundedCornerShape(20.dp)
+val OneUIShapeSmall = RoundedCornerShape(10.dp)
+val OneUIShapeGridDense = RoundedCornerShape(0.dp)
 
 @Composable
 fun OneUITheme(
@@ -150,9 +157,9 @@ fun OneUITheme(
 }
 
 /**
- * Samsung One UI Ergonomic Collapsing Header Scaffold.
- * Displays a spacious Viewing Area (~156.dp) with a large centered title when at scroll top,
- * smoothly collapsing into a compact 56.dp action bar as the user scrolls down.
+ * Samsung One UI 6/7 Ergonomic Collapsing Header Scaffold.
+ * Displays a generous Viewing Area at the top (~168.dp) with centered light title (34.sp)
+ * and subtitle, smoothly collapsing on scroll into a sleek 56.dp One UI action bar.
  */
 @Composable
 fun OneUICollapsingScaffold(
@@ -166,7 +173,7 @@ fun OneUICollapsingScaffold(
 ) {
     val colors = LocalOneUIColors.current
     val density = LocalDensity.current
-    val maxExpandPx = with(density) { 148.dp.toPx() }
+    val maxExpandPx = with(density) { 164.dp.toPx() }
     var collapseOffsetPx by remember(title) { mutableFloatStateOf(0f) }
 
     val nestedScrollConnection = remember(maxExpandPx) {
@@ -212,7 +219,7 @@ fun OneUICollapsingScaffold(
             .statusBarsPadding()
             .nestedScroll(nestedScrollConnection)
     ) {
-        // Viewing Area (collapses smoothly)
+        // Viewing Area (One UI 32% top reachability region)
         if (expandedHeightDp > 1.dp) {
             Box(
                 modifier = Modifier
@@ -229,15 +236,16 @@ fun OneUICollapsingScaffold(
                 ) {
                     Text(
                         text = title,
-                        fontSize = 31.sp,
+                        fontSize = 34.sp,
                         fontWeight = FontWeight.Light,
+                        letterSpacing = (-0.5).sp,
                         color = colors.textPrimary,
                         textAlign = TextAlign.Center,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                     if (!subtitle.isNullOrBlank()) {
-                        Spacer(modifier = Modifier.height(4.dp))
+                        Spacer(modifier = Modifier.height(6.dp))
                         Text(
                             text = subtitle,
                             fontSize = 13.sp,
@@ -252,12 +260,12 @@ fun OneUICollapsingScaffold(
             }
         }
 
-        // Interaction Action Bar (always within easy reach)
+        // Compact Interaction Action Bar (56.dp)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(56.dp)
-                .padding(horizontal = 12.dp),
+                .padding(horizontal = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             if (navigationIcon != null) {
@@ -266,14 +274,14 @@ fun OneUICollapsingScaffold(
             val collapsedTitleAlpha = ((collapseFraction - 0.35f) * 1.54f).coerceIn(0f, 1f)
             Text(
                 text = title,
-                fontSize = 20.sp,
+                fontSize = 21.sp,
                 fontWeight = FontWeight.SemiBold,
                 color = colors.textPrimary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier
                     .weight(1f)
-                    .padding(start = if (navigationIcon != null) 4.dp else 10.dp)
+                    .padding(start = if (navigationIcon != null) 4.dp else 12.dp)
                     .alpha(collapsedTitleAlpha)
             )
             Row(

@@ -9,16 +9,17 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -48,34 +49,32 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.outlined.AutoStories
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.Collections
 import androidx.compose.material.icons.outlined.DarkMode
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.History
-import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.PhotoLibrary
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.SelectAll
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.VideoLibrary
-import androidx.compose.material.icons.outlined.ZoomIn
-import androidx.compose.material.icons.outlined.ZoomOut
 import androidx.compose.material.icons.rounded.AutoAwesome
-import androidx.compose.material.icons.rounded.AutoStories
+import androidx.compose.material.icons.rounded.CameraAlt
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Collections
 import androidx.compose.material.icons.rounded.Favorite
-import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.Menu
+import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.PlayArrow
-import androidx.compose.material.icons.rounded.RestoreFromTrash
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
@@ -104,8 +103,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -123,23 +124,25 @@ import com.oneui.gallery.model.StoryItem
 import com.oneui.gallery.ui.theme.LocalOneUIColors
 import com.oneui.gallery.ui.theme.OneUICollapsingScaffold
 import com.oneui.gallery.ui.theme.OneUISectionCard
-import com.oneui.gallery.ui.theme.OneUIShapeGridDense
 import com.oneui.gallery.ui.theme.OneUIShapeLarge
 import com.oneui.gallery.ui.theme.OneUIShapeMedium
+import com.oneui.gallery.ui.theme.OneUIShapeMenu
 import com.oneui.gallery.ui.theme.OneUIShapeSmall
 import com.oneui.gallery.ui.theme.OneUITheme
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-private enum class GalleryTab(
-    val label: String,
-    val selectedIcon: ImageVector,
-    val unselectedIcon: ImageVector
-) {
-    PICTURES("Imagens", Icons.Rounded.Collections, Icons.Outlined.Collections),
-    ALBUMS("Álbuns", Icons.Rounded.Folder, Icons.Outlined.Folder),
-    STORIES("Histórias", Icons.Rounded.AutoStories, Icons.Outlined.AutoStories),
-    MENU("Menu", Icons.Rounded.Menu, Icons.Outlined.Menu)
+private enum class GalleryTab(val label: String) {
+    PICTURES("Imagens"),
+    ALBUMS("Álbuns"),
+    STORIES("Histórias"),
+    MENU("Menu")
+}
+
+private enum class TimelineZoomMode(val label: String, val columns: Int, val showDateHeaders: Boolean) {
+    YEARS("Anos", 6, false),
+    MONTHS("Meses", 4, true),
+    DAYS("Dias", 3, true)
 }
 
 private enum class AlbumFilter(val label: String) {
@@ -161,7 +164,6 @@ private sealed interface CollectionRoute {
 fun GalleryApp() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val systemDark = isSystemInDarkTheme()
     var isDarkMode by remember {
         mutableStateOf(MediaRepository.isDarkMode(context) ?: true)
     }
@@ -193,8 +195,10 @@ fun GalleryApp() {
 
     var currentTab by remember { mutableStateOf(GalleryTab.PICTURES) }
     var columnCount by remember { mutableIntStateOf(4) }
+    var showDateHeaders by remember { mutableStateOf(true) }
     var showSearch by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
+    var showOverflowMenu by remember { mutableStateOf(false) }
     var albumFilter by remember { mutableStateOf(AlbumFilter.ALL) }
 
     var selectionMode by remember { mutableStateOf(false) }
@@ -280,7 +284,6 @@ fun GalleryApp() {
             }
         }
 
-        // Back button hierarchy
         BackHandler(enabled = editingItem != null || viewerRequest != null || activeStory != null || collectionRoute != null || selectionMode || showSearch) {
             when {
                 editingItem != null -> editingItem = null
@@ -305,7 +308,6 @@ fun GalleryApp() {
             return@OneUITheme
         }
 
-        // Full-Screen Editor
         val currentEditing = editingItem
         if (currentEditing != null) {
             EditorScreen(
@@ -320,7 +322,6 @@ fun GalleryApp() {
             return@OneUITheme
         }
 
-        // Full-Screen Story Player
         val currentStory = activeStory
         if (currentStory != null) {
             StoryPlayerOverlay(
@@ -330,11 +331,9 @@ fun GalleryApp() {
             return@OneUITheme
         }
 
-        // Full-Screen Viewer
         val currentViewer = viewerRequest
         if (currentViewer != null) {
             val (viewerList, initialIdx, isTrash) = currentViewer
-            // Keep viewer items synced with allMedia state (e.g. favorite status)
             val syncedList = remember(viewerList, allMedia) {
                 val map = allMedia.associateBy { it.id }
                 viewerList.mapNotNull { map[it.id] }.filter { it.isTrashed == isTrash }
@@ -374,7 +373,6 @@ fun GalleryApp() {
             return@OneUITheme
         }
 
-        // Sub-collection screen (Album detail, Favorites, Videos, Recent, Trash)
         val route = collectionRoute
         if (route != null) {
             val (routeTitle, routeItems, isTrashRoute) = when (route) {
@@ -428,7 +426,7 @@ fun GalleryApp() {
                             refreshMedia()
                             Toast.makeText(context, "Todos os itens restaurados", Toast.LENGTH_SHORT).show()
                         }) {
-                            Text("Restaurar", color = colors.primaryBlue, fontSize = 13.sp)
+                            Text("Restaurar", color = colors.primaryBlue, fontSize = 14.sp, fontWeight = FontWeight.Medium)
                         }
                         TextButton(onClick = {
                             scope.launch {
@@ -437,13 +435,8 @@ fun GalleryApp() {
                                 Toast.makeText(context, "Lixeira esvaziada", Toast.LENGTH_SHORT).show()
                             }
                         }) {
-                            Text("Esvaziar", color = colors.galleryRose, fontSize = 13.sp)
+                            Text("Esvaziar", color = colors.galleryRose, fontSize = 14.sp, fontWeight = FontWeight.Medium)
                         }
-                    } else if (routeItems.isNotEmpty()) {
-                        ColumnZoomButtons(
-                            columnCount = columnCount,
-                            onChange = { columnCount = it }
-                        )
                     }
                 }
             ) {
@@ -459,6 +452,7 @@ fun GalleryApp() {
                     MediaGridContent(
                         items = routeItems,
                         columnCount = columnCount,
+                        showDateHeaders = true,
                         onColumnCountChange = { columnCount = it },
                         selectionMode = selectionMode,
                         selectedIds = selectedIds,
@@ -479,16 +473,17 @@ fun GalleryApp() {
             return@OneUITheme
         }
 
-        // Main 4-Tab One UI Gallery Scaffold
+        // Main Samsung One UI Gallery 4-Tab Scaffold
         val tabTitle = when {
             selectionMode -> "${selectedIds.size} selecionado(s)"
+            currentTab == GalleryTab.PICTURES -> "Galeria"
             else -> currentTab.label
         }
         val tabSubtitle = when (currentTab) {
-            GalleryTab.PICTURES -> "${displayedPictures.size} ${if (displayedPictures.size == 1) "item" else "itens"}"
+            GalleryTab.PICTURES -> "${displayedPictures.size} ${if (displayedPictures.size == 1) "foto" else "fotos e vídeos"}"
             GalleryTab.ALBUMS -> "${albums.size} ${if (albums.size == 1) "álbum" else "álbuns"}"
             GalleryTab.STORIES -> "${stories.size} ${if (stories.size == 1) "história" else "histórias"}"
-            GalleryTab.MENU -> "Samsung One UI Design"
+            GalleryTab.MENU -> "Configurações e utilitários"
         }
 
         OneUICollapsingScaffold(
@@ -500,39 +495,12 @@ fun GalleryApp() {
                         selectionMode = false
                         selectedIds.clear()
                     }) {
-                        Icon(Icons.Outlined.Close, contentDescription = "Sair da seleção", tint = colors.textPrimary)
+                        Icon(Icons.Outlined.Close, contentDescription = "Cancelar seleção", tint = colors.textPrimary)
                     }
                 }
             } else null,
             actions = {
-                if (currentTab == GalleryTab.PICTURES && !selectionMode) {
-                    IconButton(onClick = {
-                        showSearch = !showSearch
-                        if (!showSearch) searchQuery = ""
-                    }) {
-                        Icon(
-                            imageVector = Icons.Outlined.Search,
-                            contentDescription = "Pesquisar",
-                            tint = if (showSearch) colors.primaryBlue else colors.textPrimary
-                        )
-                    }
-                    ColumnZoomButtons(
-                        columnCount = columnCount,
-                        onChange = { columnCount = it }
-                    )
-                    if (displayedPictures.isNotEmpty()) {
-                        IconButton(onClick = {
-                            selectionMode = true
-                            selectedIds.clear()
-                        }) {
-                            Icon(
-                                imageVector = Icons.Outlined.CheckCircle,
-                                contentDescription = "Selecionar",
-                                tint = colors.textPrimary
-                            )
-                        }
-                    }
-                } else if (selectionMode) {
+                if (selectionMode) {
                     IconButton(onClick = {
                         if (selectedIds.size == displayedPictures.size) {
                             selectedIds.clear()
@@ -546,6 +514,96 @@ fun GalleryApp() {
                             contentDescription = "Selecionar tudo",
                             tint = colors.primaryBlue
                         )
+                    }
+                } else {
+                    if (currentTab == GalleryTab.PICTURES) {
+                        IconButton(onClick = {
+                            showSearch = !showSearch
+                            if (!showSearch) searchQuery = ""
+                        }) {
+                            Icon(
+                                imageVector = Icons.Outlined.Search,
+                                contentDescription = "Pesquisar",
+                                tint = if (showSearch) colors.primaryBlue else colors.textPrimary
+                            )
+                        }
+                    }
+
+                    // One UI Overflow Menu (⋮) with 22.dp Squircle Popup
+                    Box {
+                        IconButton(onClick = { showOverflowMenu = true }) {
+                            Icon(
+                                imageVector = Icons.Rounded.MoreVert,
+                                contentDescription = "Mais opções",
+                                tint = colors.textPrimary
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = showOverflowMenu,
+                            onDismissRequest = { showOverflowMenu = false },
+                            modifier = Modifier
+                                .background(colors.popupMenu, OneUIShapeMenu)
+                                .clip(OneUIShapeMenu)
+                        ) {
+                            if (currentTab == GalleryTab.PICTURES && displayedPictures.isNotEmpty()) {
+                                DropdownMenuItem(
+                                    text = { Text("Editar / Selecionar", color = colors.textPrimary, fontSize = 15.sp) },
+                                    leadingIcon = { Icon(Icons.Outlined.CheckCircle, null, tint = colors.textPrimary) },
+                                    onClick = {
+                                        showOverflowMenu = false
+                                        selectionMode = true
+                                        selectedIds.clear()
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = {
+                                        val nextCols = when (columnCount) {
+                                            3 -> 4
+                                            4 -> 5
+                                            5 -> 6
+                                            6 -> 2
+                                            else -> 3
+                                        }
+                                        Text("Colunas da grade (${columnCount} → $nextCols)", color = colors.textPrimary, fontSize = 15.sp)
+                                    },
+                                    leadingIcon = { Icon(Icons.Outlined.GridView, null, tint = colors.textPrimary) },
+                                    onClick = {
+                                        showOverflowMenu = false
+                                        columnCount = when (columnCount) {
+                                            3 -> 4
+                                            4 -> 5
+                                            5 -> 6
+                                            6 -> 2
+                                            else -> 3
+                                        }
+                                        showDateHeaders = columnCount <= 5
+                                    }
+                                )
+                            }
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        if (isDarkMode) "Mudar para Tema Claro" else "Mudar para Tema Escuro",
+                                        color = colors.textPrimary,
+                                        fontSize = 15.sp
+                                    )
+                                },
+                                leadingIcon = { Icon(Icons.Outlined.DarkMode, null, tint = colors.textPrimary) },
+                                onClick = {
+                                    showOverflowMenu = false
+                                    isDarkMode = !isDarkMode
+                                    MediaRepository.setDarkMode(context, isDarkMode)
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Gerar 12 fotos de exemplo", color = colors.primaryBlue, fontSize = 15.sp) },
+                                leadingIcon = { Icon(Icons.Rounded.AutoAwesome, null, tint = colors.primaryBlue) },
+                                onClick = {
+                                    showOverflowMenu = false
+                                    triggerSampleGeneration()
+                                }
+                            )
+                        }
                     }
                 }
             },
@@ -603,7 +661,7 @@ fun GalleryApp() {
                         }
                     )
                 } else {
-                    OneUIBottomNavigation(
+                    OneUIGalleryBottomBar(
                         currentTab = currentTab,
                         onSelectTab = { currentTab = it }
                     )
@@ -634,24 +692,49 @@ fun GalleryApp() {
                             )
                         }
                         else -> {
-                            MediaGridContent(
-                                items = displayedPictures,
-                                columnCount = columnCount,
-                                onColumnCountChange = { columnCount = it },
-                                selectionMode = selectionMode,
-                                selectedIds = selectedIds,
-                                onToggleSelect = { id ->
-                                    if (selectedIds.contains(id)) selectedIds.remove(id) else selectedIds.add(id)
-                                    if (selectedIds.isEmpty()) selectionMode = false
-                                },
-                                onEnterSelection = { id ->
-                                    selectionMode = true
-                                    if (!selectedIds.contains(id)) selectedIds.add(id)
-                                },
-                                onItemClick = { idx ->
-                                    viewerRequest = Triple(displayedPictures, idx, false)
+                            Box(modifier = Modifier.fillMaxSize()) {
+                                MediaGridContent(
+                                    items = displayedPictures,
+                                    columnCount = columnCount,
+                                    showDateHeaders = showDateHeaders,
+                                    onColumnCountChange = { newCols ->
+                                        columnCount = newCols
+                                        showDateHeaders = newCols <= 5
+                                    },
+                                    selectionMode = selectionMode,
+                                    selectedIds = selectedIds,
+                                    onToggleSelect = { id ->
+                                        if (selectedIds.contains(id)) selectedIds.remove(id) else selectedIds.add(id)
+                                        if (selectedIds.isEmpty()) selectionMode = false
+                                    },
+                                    onEnterSelection = { id ->
+                                        selectionMode = true
+                                        if (!selectedIds.contains(id)) selectedIds.add(id)
+                                    },
+                                    onItemClick = { idx ->
+                                        viewerRequest = Triple(displayedPictures, idx, false)
+                                    }
+                                )
+
+                                // Samsung Gallery Signature Floating "Anos | Meses | Dias" Pill
+                                if (!selectionMode && displayedPictures.isNotEmpty()) {
+                                    val activeMode = when {
+                                        columnCount >= 6 -> TimelineZoomMode.YEARS
+                                        columnCount >= 4 -> TimelineZoomMode.MONTHS
+                                        else -> TimelineZoomMode.DAYS
+                                    }
+                                    OneUITimelineFloatingPill(
+                                        activeMode = activeMode,
+                                        onSelectMode = { mode ->
+                                            columnCount = mode.columns
+                                            showDateHeaders = mode.showDateHeaders
+                                        },
+                                        modifier = Modifier
+                                            .align(Alignment.BottomCenter)
+                                            .padding(bottom = 14.dp)
+                                    )
                                 }
-                            )
+                            }
                         }
                     }
                 }
@@ -663,6 +746,10 @@ fun GalleryApp() {
                         selectedFilter = albumFilter,
                         onSelectFilter = { albumFilter = it },
                         onAlbumClick = { album -> collectionRoute = CollectionRoute.Album(album) },
+                        onOpenFavorites = { collectionRoute = CollectionRoute.Favorites },
+                        onOpenVideos = { collectionRoute = CollectionRoute.Videos },
+                        onOpenRecent = { collectionRoute = CollectionRoute.Recent },
+                        onOpenTrash = { collectionRoute = CollectionRoute.Trash },
                         onGenerateSamples = { triggerSampleGeneration() },
                         isGenerating = isGeneratingSamples
                     )
@@ -702,30 +789,42 @@ fun GalleryApp() {
 }
 
 @Composable
-private fun ColumnZoomButtons(
-    columnCount: Int,
-    onChange: (Int) -> Unit
+private fun OneUITimelineFloatingPill(
+    activeMode: TimelineZoomMode,
+    onSelectMode: (TimelineZoomMode) -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val colors = LocalOneUIColors.current
-    IconButton(
-        onClick = { if (columnCount > 2) onChange(columnCount - 1) },
-        enabled = columnCount > 2
+    Surface(
+        shape = RoundedCornerShape(24.dp),
+        color = colors.floatingPill,
+        tonalElevation = 0.dp,
+        shadowElevation = 6.dp,
+        modifier = modifier.border(0.5.dp, colors.divider, RoundedCornerShape(24.dp))
     ) {
-        Icon(
-            imageVector = Icons.Outlined.ZoomIn,
-            contentDescription = "Aumentar miniaturas",
-            tint = if (columnCount > 2) colors.textPrimary else colors.textSecondary.copy(alpha = 0.4f)
-        )
-    }
-    IconButton(
-        onClick = { if (columnCount < 6) onChange(columnCount + 1) },
-        enabled = columnCount < 6
-    ) {
-        Icon(
-            imageVector = Icons.Outlined.ZoomOut,
-            contentDescription = "Diminuir miniaturas",
-            tint = if (columnCount < 6) colors.textPrimary else colors.textSecondary.copy(alpha = 0.4f)
-        )
+        Row(
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TimelineZoomMode.entries.forEach { mode ->
+                val selected = mode == activeMode
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(if (selected) colors.surfaceElevated else Color.Transparent)
+                        .clickable { onSelectMode(mode) }
+                        .padding(horizontal = 14.dp, vertical = 6.dp)
+                ) {
+                    Text(
+                        text = mode.label,
+                        color = if (selected) colors.textPrimary else colors.textSecondary,
+                        fontSize = 12.sp,
+                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -734,6 +833,7 @@ private fun ColumnZoomButtons(
 private fun MediaGridContent(
     items: List<MediaItem>,
     columnCount: Int,
+    showDateHeaders: Boolean,
     onColumnCountChange: (Int) -> Unit,
     selectionMode: Boolean,
     selectedIds: List<Long>,
@@ -748,156 +848,212 @@ private fun MediaGridContent(
         items.mapIndexed { index, item -> item.id to index }.toMap()
     }
     var pinchAccumulator by remember { mutableFloatStateOf(1f) }
-    val thumbShape = if (columnCount <= 3) OneUIShapeSmall else OneUIShapeGridDense
 
     LazyVerticalGrid(
         columns = GridCells.Fixed(columnCount),
-        contentPadding = PaddingValues(horizontal = 3.dp, vertical = 6.dp),
-        horizontalArrangement = Arrangement.spacedBy(2.5.dp),
-        verticalArrangement = Arrangement.spacedBy(2.5.dp),
+        contentPadding = PaddingValues(top = 4.dp, bottom = 72.dp),
+        horizontalArrangement = Arrangement.spacedBy(1.5.dp),
+        verticalArrangement = Arrangement.spacedBy(1.5.dp),
         modifier = Modifier
             .fillMaxSize()
+            // Custom 2-finger pinch that NEVER blocks 1-finger vertical scrolling
             .pointerInput(columnCount) {
-                detectTransformGestures { _, _, zoom, _ ->
-                    if (zoom != 1f) {
-                        pinchAccumulator *= zoom
-                        if (pinchAccumulator > 1.24f && columnCount > 2) {
-                            onColumnCountChange(columnCount - 1)
-                            pinchAccumulator = 1f
-                        } else if (pinchAccumulator < 0.78f && columnCount < 6) {
-                            onColumnCountChange(columnCount + 1)
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    do {
+                        val event = awaitPointerEvent()
+                        if (event.changes.count { it.pressed } >= 2) {
+                            val zoom = event.calculateZoom()
+                            if (zoom != 1f) {
+                                pinchAccumulator *= zoom
+                                if (pinchAccumulator > 1.24f && columnCount > 2) {
+                                    onColumnCountChange(columnCount - 1)
+                                    pinchAccumulator = 1f
+                                } else if (pinchAccumulator < 0.78f && columnCount < 6) {
+                                    onColumnCountChange(columnCount + 1)
+                                    pinchAccumulator = 1f
+                                }
+                                event.changes.forEach { if (it.positionChanged()) it.consume() }
+                            }
+                        } else {
                             pinchAccumulator = 1f
                         }
-                    }
+                    } while (event.changes.any { it.pressed })
                 }
             }
     ) {
-        grouped.forEach { (dateLabel, groupItems) ->
-            item(span = { GridItemSpan(columnCount) }, key = "header_$dateLabel") {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(start = 13.dp, end = 13.dp, top = 14.dp, bottom = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(
-                        text = dateLabel,
-                        color = colors.textPrimary,
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    if (selectionMode) {
-                        val allGroupSelected = groupItems.all { selectedIds.contains(it.id) }
+        if (!showDateHeaders) {
+            items(items, key = { it.id }) { media ->
+                OneUIGridThumbnail(
+                    media = media,
+                    isSelected = selectedIds.contains(media.id),
+                    selectionMode = selectionMode,
+                    onClick = {
+                        if (selectionMode) onToggleSelect(media.id)
+                        else onItemClick(indexById[media.id] ?: 0)
+                    },
+                    onLongClick = { onEnterSelection(media.id) }
+                )
+            }
+        } else {
+            grouped.forEach { (dateLabel, groupItems) ->
+                item(span = { GridItemSpan(columnCount) }, key = "header_$dateLabel") {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
                         Text(
-                            text = if (allGroupSelected) "Desmarcar" else "Marcar dia",
-                            color = colors.primaryBlue,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Medium,
-                            modifier = Modifier.clickable {
-                                if (allGroupSelected) {
-                                    groupItems.forEach { if (selectedIds.contains(it.id)) onToggleSelect(it.id) }
-                                } else {
-                                    groupItems.forEach { if (!selectedIds.contains(it.id)) onToggleSelect(it.id) }
-                                }
-                            }
+                            text = dateLabel,
+                            color = colors.textPrimary,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold
                         )
+                        if (selectionMode) {
+                            val allGroupSelected = groupItems.all { selectedIds.contains(it.id) }
+                            Text(
+                                text = if (allGroupSelected) "Desmarcar" else "Selecionar dia",
+                                color = colors.primaryBlue,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Medium,
+                                modifier = Modifier.clickable {
+                                    if (allGroupSelected) {
+                                        groupItems.forEach { if (selectedIds.contains(it.id)) onToggleSelect(it.id) }
+                                    } else {
+                                        groupItems.forEach { if (!selectedIds.contains(it.id)) onToggleSelect(it.id) }
+                                    }
+                                }
+                            )
+                        }
                     }
+                }
+
+                items(groupItems, key = { it.id }) { media ->
+                    OneUIGridThumbnail(
+                        media = media,
+                        isSelected = selectedIds.contains(media.id),
+                        selectionMode = selectionMode,
+                        onClick = {
+                            if (selectionMode) onToggleSelect(media.id)
+                            else onItemClick(indexById[media.id] ?: 0)
+                        },
+                        onLongClick = { onEnterSelection(media.id) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun OneUIGridThumbnail(
+    media: MediaItem,
+    isSelected: Boolean,
+    selectionMode: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit
+) {
+    val context = LocalContext.current
+    val colors = LocalOneUIColors.current
+    val shrinkScale by animateFloatAsState(
+        targetValue = if (selectionMode && isSelected) 0.84f else 1f,
+        label = "oneui_select_scale"
+    )
+    val cornerRadius by animateDpAsState(
+        targetValue = if (selectionMode && isSelected) 10.dp else 0.dp,
+        label = "oneui_select_corner"
+    )
+
+    Box(
+        modifier = Modifier
+            .aspectRatio(1f)
+            .background(colors.background)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    scaleX = shrinkScale
+                    scaleY = shrinkScale
+                }
+                .clip(RoundedCornerShape(cornerRadius))
+                .background(colors.surfaceCard)
+        ) {
+            AsyncImage(
+                model = ImageRequest.Builder(context)
+                    .data(media.uri)
+                    .size(320)
+                    .crossfade(true)
+                    .build(),
+                contentDescription = media.name,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+
+            if (media.isFavorite) {
+                Icon(
+                    imageVector = Icons.Rounded.Favorite,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(5.dp)
+                        .size(13.dp)
+                )
+            }
+
+            if (media.isVideo) {
+                Surface(
+                    color = Color(0x99000000),
+                    shape = RoundedCornerShape(6.dp),
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(4.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.PlayArrow,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.padding(2.dp).size(12.dp)
+                    )
                 }
             }
 
-            items(groupItems, key = { it.id }) { media ->
-                val isSelected = selectedIds.contains(media.id)
+            if (selectionMode && isSelected) {
                 Box(
                     modifier = Modifier
-                        .aspectRatio(1f)
-                        .clip(thumbShape)
-                        .background(colors.surfaceCard)
-                        .combinedClickable(
-                            onClick = {
-                                if (selectionMode) {
-                                    onToggleSelect(media.id)
-                                } else {
-                                    val idx = indexById[media.id] ?: 0
-                                    onItemClick(idx)
-                                }
-                            },
-                            onLongClick = {
-                                onEnterSelection(media.id)
-                            }
-                        )
-                ) {
-                    AsyncImage(
-                        model = ImageRequest.Builder(context)
-                            .data(media.uri)
-                            .size(320)
-                            .crossfade(true)
-                            .build(),
-                        contentDescription = media.name,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
+                        .fillMaxSize()
+                        .background(colors.selectionScrim)
+                )
+            }
+        }
+
+        // Samsung One UI Top-Left Check Circle
+        if (selectionMode) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(6.dp)
+                    .size(21.dp)
+                    .clip(CircleShape)
+                    .background(if (isSelected) colors.primaryBlue else Color(0x55000000))
+                    .border(1.5.dp, Color.White, CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                if (isSelected) {
+                    Icon(
+                        imageVector = Icons.Rounded.Check,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(13.dp)
                     )
-
-                    if (media.isFavorite) {
-                        Icon(
-                            imageVector = Icons.Rounded.Favorite,
-                            contentDescription = null,
-                            tint = Color.White,
-                            modifier = Modifier
-                                .align(Alignment.BottomStart)
-                                .padding(5.dp)
-                                .size(14.dp)
-                        )
-                    }
-
-                    if (media.isVideo) {
-                        Surface(
-                            color = Color(0x99000000),
-                            shape = RoundedCornerShape(6.dp),
-                            modifier = Modifier
-                                .align(Alignment.BottomEnd)
-                                .padding(4.dp)
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Rounded.PlayArrow,
-                                    contentDescription = null,
-                                    tint = Color.White,
-                                    modifier = Modifier.size(12.dp)
-                                )
-                            }
-                        }
-                    }
-
-                    if (selectionMode) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(if (isSelected) colors.selectionScrim else Color.Transparent)
-                        )
-                        Box(
-                            modifier = Modifier
-                                .align(Alignment.TopEnd)
-                                .padding(6.dp)
-                                .size(22.dp)
-                                .clip(CircleShape)
-                                .background(if (isSelected) colors.primaryBlue else Color(0x66000000))
-                                .border(1.5.dp, Color.White, CircleShape),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            if (isSelected) {
-                                Icon(
-                                    imageVector = Icons.Rounded.Check,
-                                    contentDescription = null,
-                                    tint = Color.White,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                            }
-                        }
-                    }
                 }
             }
         }
@@ -911,6 +1067,10 @@ private fun AlbumsTabContent(
     selectedFilter: AlbumFilter,
     onSelectFilter: (AlbumFilter) -> Unit,
     onAlbumClick: (AlbumItem) -> Unit,
+    onOpenFavorites: () -> Unit,
+    onOpenVideos: () -> Unit,
+    onOpenRecent: () -> Unit,
+    onOpenTrash: () -> Unit,
     onGenerateSamples: () -> Unit,
     isGenerating: Boolean
 ) {
@@ -942,6 +1102,7 @@ private fun AlbumsTabContent(
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
+        // Quick Samsung Album Filter & Collection Pills
         LazyRow(
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -986,13 +1147,15 @@ private fun AlbumsTabContent(
             )
         } else {
             LazyVerticalGrid(
-                columns = GridCells.Fixed(2),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
-                horizontalArrangement = Arrangement.spacedBy(14.dp),
-                verticalArrangement = Arrangement.spacedBy(18.dp),
+                columns = GridCells.Fixed(3),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
                 modifier = Modifier.fillMaxSize()
             ) {
                 items(filteredAlbums, key = { it.id }) { album ->
+                    val isCamera = album.name.contains("Camera", ignoreCase = true) ||
+                        album.name.contains("Câmera", ignoreCase = true)
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1004,37 +1167,98 @@ private fun AlbumsTabContent(
                                 .aspectRatio(1f)
                                 .clip(OneUIShapeMedium)
                                 .background(colors.surfaceCard)
+                                .border(0.5.dp, colors.divider, OneUIShapeMedium)
                         ) {
                             AsyncImage(
                                 model = ImageRequest.Builder(context)
                                     .data(album.coverUri)
-                                    .size(480)
+                                    .size(380)
                                     .crossfade(true)
                                     .build(),
                                 contentDescription = album.name,
                                 contentScale = ContentScale.Crop,
                                 modifier = Modifier.fillMaxSize()
                             )
+                            if (isCamera) {
+                                Surface(
+                                    color = Color(0x77000000),
+                                    shape = CircleShape,
+                                    modifier = Modifier
+                                        .align(Alignment.BottomStart)
+                                        .padding(6.dp)
+                                        .size(22.dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.CameraAlt,
+                                            contentDescription = null,
+                                            tint = Color.White,
+                                            modifier = Modifier.size(13.dp)
+                                        )
+                                    }
+                                }
+                            }
                         }
-                        Spacer(modifier = Modifier.height(8.dp))
+                        Spacer(modifier = Modifier.height(6.dp))
                         Text(
                             text = album.name,
                             color = colors.textPrimary,
-                            fontSize = 15.sp,
+                            fontSize = 13.sp,
                             fontWeight = FontWeight.Medium,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(horizontal = 4.dp)
+                            modifier = Modifier.padding(horizontal = 2.dp)
                         )
                         Text(
-                            text = "${album.items.size} ${if (album.items.size == 1) "item" else "itens"}",
+                            text = "${album.items.size}",
                             color = colors.textSecondary,
-                            fontSize = 12.sp,
-                            modifier = Modifier.padding(horizontal = 4.dp)
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(horizontal = 2.dp)
                         )
                     }
                 }
+
+                // Bottom Samsung Quick Collections Shortcut Row
+                item(span = { GridItemSpan(3) }) {
+                    Column(modifier = Modifier.padding(top = 8.dp)) {
+                        HorizontalDivider(color = colors.divider, modifier = Modifier.padding(bottom = 12.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            AlbumShortcutChip("Favoritos", Icons.Outlined.FavoriteBorder, Modifier.weight(1f), onOpenFavorites)
+                            AlbumShortcutChip("Vídeos", Icons.Outlined.VideoLibrary, Modifier.weight(1f), onOpenVideos)
+                            AlbumShortcutChip("Recentes", Icons.Outlined.History, Modifier.weight(1f), onOpenRecent)
+                            AlbumShortcutChip("Lixeira", Icons.Outlined.Delete, Modifier.weight(1f), onOpenTrash)
+                        }
+                    }
+                }
             }
+        }
+    }
+}
+
+@Composable
+private fun AlbumShortcutChip(
+    label: String,
+    icon: ImageVector,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    val colors = LocalOneUIColors.current
+    Surface(
+        onClick = onClick,
+        shape = OneUIShapeMedium,
+        color = colors.surfaceCard,
+        modifier = modifier
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.padding(vertical = 10.dp, horizontal = 4.dp)
+        ) {
+            Icon(icon, contentDescription = label, tint = colors.textPrimary, modifier = Modifier.size(20.dp))
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(label, color = colors.textSecondary, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }
@@ -1265,7 +1489,6 @@ private fun MenuTabContent(
         verticalArrangement = Arrangement.spacedBy(14.dp),
         modifier = Modifier.fillMaxSize()
     ) {
-        // Section 1: Collections (One UI Grouped Card)
         item {
             OneUISectionCard {
                 Column {
@@ -1304,7 +1527,6 @@ private fun MenuTabContent(
             }
         }
 
-        // Section 2: Tools & Theme
         item {
             OneUISectionCard {
                 Column {
@@ -1356,7 +1578,6 @@ private fun MenuTabContent(
             }
         }
 
-        // Section 3: App Info Card
         item {
             OneUISectionCard {
                 Column(modifier = Modifier.padding(20.dp)) {
@@ -1368,7 +1589,7 @@ private fun MenuTabContent(
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "Inspirada nas diretrizes visuais da Samsung One UI para Moto G15 e BlueStacks. Suporte a grid pinch-to-zoom, álbuns, histórias, lixeira e editor completo de fotos.",
+                        text = "Inspirada na Samsung One UI 6/7 para Moto G15 e BlueStacks. Grade edge-to-edge com barra Anos/Meses/Dias, filmstrip no visualizador e editor integrado.",
                         color = colors.textSecondary,
                         fontSize = 13.sp,
                         lineHeight = 18.sp
@@ -1424,12 +1645,18 @@ private fun OneUIMenuRow(
     }
 }
 
+/**
+ * Authentic Samsung Gallery One UI Bottom Bar:
+ * 3 text-first tabs ("Imagens", "Álbuns", "Histórias") with active underline pill + right-aligned Menu icon.
+ */
 @Composable
-private fun OneUIBottomNavigation(
+private fun OneUIGalleryBottomBar(
     currentTab: GalleryTab,
     onSelectTab: (GalleryTab) -> Unit
 ) {
     val colors = LocalOneUIColors.current
+    val mainTabs = listOf(GalleryTab.PICTURES, GalleryTab.ALBUMS, GalleryTab.STORIES)
+
     Surface(
         color = colors.bottomBar,
         tonalElevation = 0.dp,
@@ -1441,47 +1668,51 @@ private fun OneUIBottomNavigation(
                 modifier = Modifier
                     .fillMaxWidth()
                     .navigationBarsPadding()
-                    .height(62.dp)
-                    .padding(horizontal = 8.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
+                    .height(54.dp)
+                    .padding(horizontal = 16.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                GalleryTab.entries.forEach { tab ->
-                    val selected = tab == currentTab
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center,
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(16.dp))
-                            .clickable { onSelectTab(tab) }
-                            .padding(vertical = 6.dp)
-                    ) {
-                        Box(
+                Row(
+                    modifier = Modifier.weight(1f),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    mainTabs.forEach { tab ->
+                        val selected = tab == currentTab
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center,
                             modifier = Modifier
                                 .clip(RoundedCornerShape(14.dp))
-                                .background(
-                                    if (selected) colors.primaryBlue.copy(alpha = 0.14f) else Color.Transparent
-                                )
-                                .padding(horizontal = 14.dp, vertical = 3.dp),
-                            contentAlignment = Alignment.Center
+                                .clickable { onSelectTab(tab) }
+                                .padding(horizontal = 14.dp, vertical = 6.dp)
                         ) {
-                            Icon(
-                                imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
-                                contentDescription = tab.label,
-                                tint = if (selected) colors.primaryBlue else colors.textSecondary,
-                                modifier = Modifier.size(22.dp)
+                            Text(
+                                text = tab.label,
+                                color = if (selected) colors.textPrimary else colors.textSecondary,
+                                fontSize = 15.sp,
+                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                                maxLines = 1
+                            )
+                            Spacer(modifier = Modifier.height(3.dp))
+                            Box(
+                                modifier = Modifier
+                                    .width(if (selected) 24.dp else 0.dp)
+                                    .height(2.5.dp)
+                                    .clip(RoundedCornerShape(2.dp))
+                                    .background(if (selected) colors.textPrimary else Color.Transparent)
                             )
                         }
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = tab.label,
-                            color = if (selected) colors.primaryBlue else colors.textSecondary,
-                            fontSize = 11.sp,
-                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                            maxLines = 1
-                        )
                     }
+                }
+
+                IconButton(onClick = { onSelectTab(GalleryTab.MENU) }) {
+                    Icon(
+                        imageVector = Icons.Rounded.Menu,
+                        contentDescription = "Menu",
+                        tint = if (currentTab == GalleryTab.MENU) colors.primaryBlue else colors.textPrimary,
+                        modifier = Modifier.size(23.dp)
+                    )
                 }
             }
         }
@@ -1506,7 +1737,7 @@ private fun SelectionBottomBar(
                 modifier = Modifier
                     .fillMaxWidth()
                     .navigationBarsPadding()
-                    .height(64.dp)
+                    .height(62.dp)
                     .padding(horizontal = 16.dp),
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically
@@ -1527,7 +1758,7 @@ private fun SelectionBottomBar(
                 )
                 SelectionActionButton(
                     icon = Icons.Outlined.Delete,
-                    label = "Lixeira",
+                    label = "Excluir",
                     enabled = selectedCount > 0,
                     tint = colors.textPrimary,
                     onClick = onDelete
