@@ -22,6 +22,7 @@ import android.os.Environment
 import android.provider.MediaStore
 import androidx.compose.ui.graphics.toArgb
 import com.oneui.gallery.model.AlbumItem
+import com.oneui.gallery.model.CollageLayout
 import com.oneui.gallery.model.CropAspect
 import com.oneui.gallery.model.DrawStroke
 import com.oneui.gallery.model.MediaItem
@@ -35,6 +36,8 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import kotlin.math.ceil
+import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 
@@ -43,6 +46,8 @@ object MediaRepository {
     private const val PREFS_NAME = "oneui_gallery_prefs"
     private const val KEY_FAVORITES = "favorite_ids"
     private const val KEY_TRASHED = "trashed_ids"
+    private const val KEY_PRIVATE = "private_ids"
+    private const val KEY_PRIVATE_PIN = "private_pin"
     private const val KEY_DARK_MODE = "dark_mode"
 
     fun isDarkMode(context: Context): Boolean? {
@@ -103,23 +108,51 @@ object MediaRepository {
         saveIdSet(context, KEY_TRASHED, trashed)
     }
 
+    fun moveToPrivate(context: Context, ids: List<Long>) {
+        val privates = getIdSet(context, KEY_PRIVATE)
+        ids.forEach { privates.add(it.toString()) }
+        saveIdSet(context, KEY_PRIVATE, privates)
+    }
+
+    fun removeFromPrivate(context: Context, ids: List<Long>) {
+        val privates = getIdSet(context, KEY_PRIVATE)
+        ids.forEach { privates.remove(it.toString()) }
+        saveIdSet(context, KEY_PRIVATE, privates)
+    }
+
+    fun getPrivatePin(context: Context): String {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(KEY_PRIVATE_PIN, "0000") ?: "0000"
+    }
+
+    fun setPrivatePin(context: Context, pin: String) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_PRIVATE_PIN, pin)
+            .apply()
+    }
+
     suspend fun deletePermanently(context: Context, items: List<MediaItem>) = withContext(Dispatchers.IO) {
         val trashed = getIdSet(context, KEY_TRASHED)
         val favs = getIdSet(context, KEY_FAVORITES)
+        val privates = getIdSet(context, KEY_PRIVATE)
         items.forEach { item ->
             runCatching {
                 context.contentResolver.delete(item.uri, null, null)
             }
             trashed.remove(item.id.toString())
             favs.remove(item.id.toString())
+            privates.remove(item.id.toString())
         }
         saveIdSet(context, KEY_TRASHED, trashed)
         saveIdSet(context, KEY_FAVORITES, favs)
+        saveIdSet(context, KEY_PRIVATE, privates)
     }
 
     suspend fun loadMedia(context: Context): List<MediaItem> = withContext(Dispatchers.IO) {
         val favs = getIdSet(context, KEY_FAVORITES)
         val trashed = getIdSet(context, KEY_TRASHED)
+        val privates = getIdSet(context, KEY_PRIVATE)
         val result = mutableListOf<MediaItem>()
 
         val now = Calendar.getInstance()
@@ -200,6 +233,7 @@ object MediaRepository {
                             isVideo = false,
                             isFavorite = favs.contains(id.toString()),
                             isTrashed = trashed.contains(id.toString()),
+                            isPrivate = privates.contains(id.toString()),
                             dateGroupLabel = formatGroup(dateTaken)
                         )
                     )
@@ -264,6 +298,7 @@ object MediaRepository {
                             isVideo = true,
                             isFavorite = favs.contains(id.toString()),
                             isTrashed = trashed.contains(id.toString()),
+                            isPrivate = privates.contains(id.toString()),
                             dateGroupLabel = formatGroup(dateTaken)
                         )
                     )
@@ -687,6 +722,117 @@ object MediaRepository {
         return context.contentResolver.openInputStream(uri)?.use {
             BitmapFactory.decodeStream(it, null, decodeOpts)
         }
+    }
+
+    suspend fun saveCollage(
+        context: Context,
+        items: List<MediaItem>,
+        layout: CollageLayout,
+        aspectRatio: Float,
+        spacingPx: Float,
+        cornerRadiusPx: Float,
+        bgColorArgb: Int
+    ): Uri? = withContext(Dispatchers.IO) {
+        if (items.isEmpty()) return@withContext null
+        val selected = items.take(6)
+        val outW = 1440
+        val outH = (outW / aspectRatio).roundToInt().coerceIn(720, 2560)
+        val output = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(output)
+        canvas.drawColor(bgColorArgb)
+
+        val scaleFactor = outW / 360f
+        val gap = spacingPx * scaleFactor
+        val corner = cornerRadiusPx * scaleFactor
+
+        val rects = computeCollageRects(selected.size, layout, outW.toFloat(), outH.toFloat(), gap)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+
+        rects.forEachIndexed { idx, rect ->
+            val media = selected.getOrNull(idx) ?: return@forEachIndexed
+            val bmp = decodeSampledBitmap(context, media.uri, 1080) ?: return@forEachIndexed
+
+            canvas.save()
+            val clipPath = Path().apply {
+                addRoundRect(rect, corner, corner, Path.Direction.CW)
+            }
+            canvas.clipPath(clipPath)
+
+            val scale = max(rect.width() / bmp.width, rect.height() / bmp.height)
+            val drawW = bmp.width * scale
+            val drawH = bmp.height * scale
+            val left = rect.left + (rect.width() - drawW) / 2f
+            val top = rect.top + (rect.height() - drawH) / 2f
+            val dst = RectF(left, top, left + drawW, top + drawH)
+            canvas.drawBitmap(bmp, null, dst, paint)
+            canvas.restore()
+            bmp.recycle()
+        }
+
+        val uri = saveBitmapToGallery(
+            context = context,
+            bitmap = output,
+            displayName = "Colagem_${System.currentTimeMillis()}.jpg",
+            subFolder = "Colagens One UI",
+            dateTakenMs = System.currentTimeMillis()
+        )
+        output.recycle()
+        uri
+    }
+
+    private fun computeCollageRects(
+        count: Int,
+        layout: CollageLayout,
+        w: Float,
+        h: Float,
+        gap: Float
+    ): List<RectF> {
+        val rects = mutableListOf<RectF>()
+        when (layout) {
+            CollageLayout.COLUMNS -> {
+                val cellW = (w - gap * (count + 1)) / count
+                for (i in 0 until count) {
+                    val left = gap + i * (cellW + gap)
+                    rects.add(RectF(left, gap, left + cellW, h - gap))
+                }
+            }
+            CollageLayout.ROWS -> {
+                val cellH = (h - gap * (count + 1)) / count
+                for (i in 0 until count) {
+                    val top = gap + i * (cellH + gap)
+                    rects.add(RectF(gap, top, w - gap, top + cellH))
+                }
+            }
+            CollageLayout.HERO -> {
+                if (count == 1) {
+                    rects.add(RectF(gap, gap, w - gap, h - gap))
+                } else {
+                    val heroH = (h - gap * 3f) * 0.58f
+                    rects.add(RectF(gap, gap, w - gap, gap + heroH))
+                    val subCount = count - 1
+                    val subTop = gap * 2f + heroH
+                    val subW = (w - gap * (subCount + 1)) / subCount
+                    for (i in 0 until subCount) {
+                        val left = gap + i * (subW + gap)
+                        rects.add(RectF(left, subTop, left + subW, h - gap))
+                    }
+                }
+            }
+            CollageLayout.GRID -> {
+                val cols = if (count <= 2) count else if (count <= 4) 2 else 3
+                val rows = ceil(count / cols.toFloat()).toInt().coerceAtLeast(1)
+                val cellW = (w - gap * (cols + 1)) / cols
+                val cellH = (h - gap * (rows + 1)) / rows
+                for (i in 0 until count) {
+                    val r = i / cols
+                    val c = i % cols
+                    val left = gap + c * (cellW + gap)
+                    val top = gap + r * (cellH + gap)
+                    rects.add(RectF(left, top, left + cellW, top + cellH))
+                }
+            }
+        }
+        return rects
     }
 
     private fun saveBitmapToGallery(

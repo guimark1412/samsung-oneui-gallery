@@ -21,10 +21,12 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -44,6 +46,7 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.GenericShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -59,6 +62,8 @@ import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
+import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.LockOpen
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.RestoreFromTrash
 import androidx.compose.material3.AlertDialog
@@ -81,8 +86,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -118,8 +126,10 @@ fun ViewerScreen(
     items: List<MediaItem>,
     initialIndex: Int,
     isTrashMode: Boolean = false,
+    isPrivateMode: Boolean = false,
     onBack: () -> Unit,
     onToggleFavorite: (MediaItem) -> Unit,
+    onTogglePrivate: (MediaItem) -> Unit = {},
     onEdit: (MediaItem) -> Unit,
     onShare: (MediaItem) -> Unit,
     onTrashOrRestore: (MediaItem) -> Unit,
@@ -143,14 +153,20 @@ fun ViewerScreen(
     var isInfoExpanded by remember { mutableStateOf(false) }
     var showPermanentDeleteDialog by remember { mutableStateOf(false) }
     var isRemastering by remember { mutableStateOf(false) }
+    var showRemasterCompare by remember { mutableStateOf(false) }
+    var remasterSplit by remember { mutableFloatStateOf(0.5f) }
     var activeZoomScale by remember { mutableFloatStateOf(1f) }
 
-    BackHandler(enabled = isInfoExpanded) {
+    BackHandler(enabled = showRemasterCompare) {
+        showRemasterCompare = false
+    }
+    BackHandler(enabled = isInfoExpanded && !showRemasterCompare) {
         isInfoExpanded = false
     }
 
     LaunchedEffect(pagerState.currentPage) {
         activeZoomScale = 1f
+        showRemasterCompare = false
         runCatching {
             filmstripState.animateScrollToItem((pagerState.currentPage - 2).coerceAtLeast(0))
         }
@@ -163,6 +179,7 @@ fun ViewerScreen(
     val previewPaddingH by animateDpAsState(if (isInfoExpanded) 20.dp else 0.dp, label = "viewer_pad_h")
     val previewCorner by animateDpAsState(if (isInfoExpanded) 24.dp else 0.dp, label = "viewer_corner")
 
+    Box(modifier = Modifier.fillMaxSize()) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -629,37 +646,8 @@ fun ViewerScreen(
                                         Surface(
                                             onClick = {
                                                 if (!isRemastering) {
-                                                    isRemastering = true
-                                                    scope.launch {
-                                                        val vivid = BuiltInFilters.presets.first { it.id == "vivid" }
-                                                        val saved = MediaRepository.saveEditedImage(
-                                                            context = context,
-                                                            sourceUri = currentItem.uri,
-                                                            rotationDegrees = 0f,
-                                                            flipH = false,
-                                                            flipV = false,
-                                                            cropAspect = CropAspect.ORIGINAL,
-                                                            filterMatrix = vivid.matrix,
-                                                            brightness = 0.04f,
-                                                            contrast = 1.12f,
-                                                            saturation = 1.14f,
-                                                            warmth = 0.05f,
-                                                            vignette = 0.08f,
-                                                            strokes = emptyList(),
-                                                            overlayTexts = emptyList(),
-                                                            previewWidth = 1080f,
-                                                            previewHeight = 1080f
-                                                        )
-                                                        isRemastering = false
-                                                        if (saved != null) {
-                                                            Toast.makeText(
-                                                                context,
-                                                                "Remasterização salva em Galeria Editadas!",
-                                                                Toast.LENGTH_SHORT
-                                                            ).show()
-                                                            onRemastered()
-                                                        }
-                                                    }
+                                                    remasterSplit = 0.5f
+                                                    showRemasterCompare = true
                                                 }
                                             },
                                             shape = RoundedCornerShape(22.dp),
@@ -722,6 +710,16 @@ fun ViewerScreen(
                                         tint = colors.textPrimary,
                                         onClick = { onShare(currentItem) }
                                     )
+                                }
+                                if (!isTrashMode) {
+                                    item {
+                                        InfoActionPill(
+                                            icon = if (isPrivateMode || currentItem.isPrivate) Icons.Rounded.LockOpen else Icons.Rounded.Lock,
+                                            label = if (isPrivateMode || currentItem.isPrivate) "Desbloquear" else "Privado",
+                                            tint = colors.primaryBlue,
+                                            onClick = { onTogglePrivate(currentItem) }
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -824,6 +822,232 @@ fun ViewerScreen(
                 }
             }
         }
+    }
+
+    if (showRemasterCompare && !currentItem.isVideo) {
+        val vivid = remember { BuiltInFilters.presets.first { it.id == "vivid" } }
+        val remasterColorMatrix = remember(vivid) {
+            ColorMatrix(
+                MediaRepository.buildCombinedColorMatrix(
+                    filterMatrix = vivid.matrix,
+                    brightness = 0.04f,
+                    contrast = 1.12f,
+                    saturation = 1.14f,
+                    warmth = 0.05f
+                ).array
+            )
+        }
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "Remasterização com IA",
+                        color = Color.White,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = colors.primaryBlue.copy(alpha = 0.22f)
+                    ) {
+                        Text(
+                            text = "Arraste a linha",
+                            color = colors.primaryBlue,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                        )
+                    }
+                }
+
+                BoxWithConstraints(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp)
+                        .clip(OneUIShapeLarge)
+                        .pointerInput(currentItem.id) {
+                            detectHorizontalDragGestures { _, dragAmount ->
+                                val widthPx = size.width.toFloat().coerceAtLeast(1f)
+                                remasterSplit = (remasterSplit + dragAmount / widthPx).coerceIn(0.06f, 0.94f)
+                            }
+                        }
+                ) {
+                    val splitClip = remember(remasterSplit) {
+                        GenericShape { size, _ ->
+                            addRect(Rect(0f, 0f, size.width * remasterSplit, size.height))
+                        }
+                    }
+
+                    // Bottom layer: Remastered AI preview (right side)
+                    AsyncImage(
+                        model = ImageRequest.Builder(context).data(currentItem.uri).crossfade(false).build(),
+                        contentDescription = "Remasterizado IA",
+                        contentScale = ContentScale.Fit,
+                        colorFilter = ColorFilter.colorMatrix(remasterColorMatrix),
+                        modifier = Modifier.fillMaxSize()
+                    )
+
+                    // Top layer clipped to left side: Original
+                    AsyncImage(
+                        model = ImageRequest.Builder(context).data(currentItem.uri).crossfade(false).build(),
+                        contentDescription = "Original",
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clip(splitClip)
+                    )
+
+                    // Badges
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = Color.Black.copy(alpha = 0.6f),
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(14.dp)
+                    ) {
+                        Text(
+                            text = "Original",
+                            color = Color.White,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                        )
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = colors.primaryBlue.copy(alpha = 0.85f),
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(14.dp)
+                    ) {
+                        Text(
+                            text = "Remasterizado IA",
+                            color = Color.White,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                        )
+                    }
+
+                    // Vertical divider line + handle
+                    val splitOffsetDp = maxWidth * remasterSplit
+                    Box(
+                        modifier = Modifier
+                            .padding(start = (splitOffsetDp - 1.dp).coerceAtLeast(0.dp))
+                            .width(2.dp)
+                            .fillMaxSize()
+                            .background(Color.White.copy(alpha = 0.9f))
+                    )
+                    Surface(
+                        shape = CircleShape,
+                        color = Color.White,
+                        shadowElevation = 6.dp,
+                        modifier = Modifier
+                            .align(Alignment.CenterStart)
+                            .padding(start = (splitOffsetDp - 18.dp).coerceAtLeast(0.dp))
+                            .size(36.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text(
+                                text = "⇆",
+                                color = Color.Black,
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp, vertical = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Surface(
+                        onClick = { showRemasterCompare = false },
+                        shape = RoundedCornerShape(24.dp),
+                        color = colors.surfaceElevated,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier.padding(vertical = 14.dp)
+                        ) {
+                            Text("Cancelar", color = colors.textPrimary, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                    Surface(
+                        onClick = {
+                            if (!isRemastering) {
+                                isRemastering = true
+                                scope.launch {
+                                    val saved = MediaRepository.saveEditedImage(
+                                        context = context,
+                                        sourceUri = currentItem.uri,
+                                        rotationDegrees = 0f,
+                                        flipH = false,
+                                        flipV = false,
+                                        cropAspect = CropAspect.ORIGINAL,
+                                        filterMatrix = vivid.matrix,
+                                        brightness = 0.04f,
+                                        contrast = 1.12f,
+                                        saturation = 1.14f,
+                                        warmth = 0.05f,
+                                        vignette = 0.08f,
+                                        strokes = emptyList(),
+                                        overlayTexts = emptyList(),
+                                        previewWidth = 1080f,
+                                        previewHeight = 1080f
+                                    )
+                                    isRemastering = false
+                                    showRemasterCompare = false
+                                    if (saved != null) {
+                                        Toast.makeText(
+                                            context,
+                                            "Remasterização salva em Galeria Editadas!",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                        onRemastered()
+                                    }
+                                }
+                            }
+                        },
+                        shape = RoundedCornerShape(24.dp),
+                        color = colors.primaryBlue,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier.padding(vertical = 14.dp)
+                        ) {
+                            Text(
+                                text = if (isRemastering) "Salvando..." else "Salvar cópia",
+                                color = Color.White,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
     }
 
     if (showPermanentDeleteDialog) {

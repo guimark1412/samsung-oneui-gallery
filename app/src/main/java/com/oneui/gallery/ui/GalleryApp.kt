@@ -9,8 +9,11 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -44,6 +47,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.outlined.AutoStories
@@ -56,20 +60,25 @@ import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.PhotoLibrary
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.SelectAll
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.VideoLibrary
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.CameraAlt
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Collections
+import androidx.compose.material.icons.rounded.Dashboard
 import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -110,6 +119,8 @@ import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -157,6 +168,7 @@ private sealed interface CollectionRoute {
     data object Videos : CollectionRoute
     data object Recent : CollectionRoute
     data object Trash : CollectionRoute
+    data object Private : CollectionRoute
 }
 
 @Composable
@@ -198,6 +210,7 @@ fun GalleryApp() {
     var showSearch by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     var showOverflowMenu by remember { mutableStateOf(false) }
+    var showCreateMenu by remember { mutableStateOf(false) }
     var albumFilter by remember { mutableStateOf(AlbumFilter.ALL) }
 
     var selectionMode by remember { mutableStateOf(false) }
@@ -206,7 +219,15 @@ fun GalleryApp() {
     var collectionRoute by remember { mutableStateOf<CollectionRoute?>(null) }
     var viewerRequest by remember { mutableStateOf<Triple<List<MediaItem>, Int, Boolean>?>(null) }
     var editingItem by remember { mutableStateOf<MediaItem?>(null) }
+    var editingCollageItems by remember { mutableStateOf<List<MediaItem>?>(null) }
     var activeStory by remember { mutableStateOf<StoryItem?>(null) }
+    var customStories by remember { mutableStateOf<List<StoryItem>>(emptyList()) }
+
+    var showPinDialogMode by remember { mutableStateOf<String?>(null) } // "unlock_private" or "change_pin"
+    var pinInput by remember { mutableStateOf("") }
+    var pinError by remember { mutableStateOf<String?>(null) }
+    var showStoryAiDialog by remember { mutableStateOf(false) }
+    var storyPrompt by remember { mutableStateOf("") }
 
     fun refreshMedia() {
         if (!hasPermission) return
@@ -270,10 +291,25 @@ fun GalleryApp() {
     OneUITheme(darkTheme = isDarkMode) {
         val colors = LocalOneUIColors.current
 
-        val activeItems = remember(allMedia) { allMedia.filter { !it.isTrashed } }
+        val activeItems = remember(allMedia) { allMedia.filter { !it.isTrashed && !it.isPrivate } }
+        val privateItems = remember(allMedia) { allMedia.filter { !it.isTrashed && it.isPrivate } }
         val trashedItems = remember(allMedia) { allMedia.filter { it.isTrashed } }
         val albums = remember(activeItems) { MediaRepository.buildAlbums(activeItems) }
-        val stories = remember(activeItems) { MediaRepository.buildStories(activeItems) }
+        val stories = remember(activeItems, customStories) {
+            customStories + MediaRepository.buildStories(activeItems)
+        }
+
+        fun openPrivateAlbum() {
+            pinInput = ""
+            pinError = null
+            showPinDialogMode = "unlock_private"
+        }
+
+        fun openChangePrivatePin() {
+            pinInput = ""
+            pinError = null
+            showPinDialogMode = "change_pin"
+        }
 
         val displayedPictures = remember(activeItems, searchQuery) {
             if (searchQuery.isBlank()) activeItems
@@ -284,9 +320,16 @@ fun GalleryApp() {
             }
         }
 
-        BackHandler(enabled = editingItem != null || viewerRequest != null || activeStory != null || collectionRoute != null || selectionMode || showSearch) {
+        BackHandler(
+            enabled = editingItem != null || editingCollageItems != null || viewerRequest != null ||
+                activeStory != null || collectionRoute != null || selectionMode || showSearch ||
+                showPinDialogMode != null || showStoryAiDialog
+        ) {
             when {
+                showPinDialogMode != null -> showPinDialogMode = null
+                showStoryAiDialog -> showStoryAiDialog = false
                 editingItem != null -> editingItem = null
+                editingCollageItems != null -> editingCollageItems = null
                 viewerRequest != null -> viewerRequest = null
                 activeStory != null -> activeStory = null
                 selectionMode -> {
@@ -322,6 +365,21 @@ fun GalleryApp() {
             return@OneUITheme
         }
 
+        val currentCollage = editingCollageItems
+        if (currentCollage != null) {
+            CollageScreen(
+                items = currentCollage,
+                onBack = { editingCollageItems = null },
+                onSaved = {
+                    editingCollageItems = null
+                    selectionMode = false
+                    selectedIds.clear()
+                    refreshMedia()
+                }
+            )
+            return@OneUITheme
+        }
+
         val currentStory = activeStory
         if (currentStory != null) {
             StoryPlayerOverlay(
@@ -334,9 +392,16 @@ fun GalleryApp() {
         val currentViewer = viewerRequest
         if (currentViewer != null) {
             val (viewerList, initialIdx, isTrash) = currentViewer
-            val syncedList = remember(viewerList, allMedia) {
+            val isPrivateRouteViewer = collectionRoute is CollectionRoute.Private && !isTrash
+            val syncedList = remember(viewerList, allMedia, isPrivateRouteViewer) {
                 val map = allMedia.associateBy { it.id }
-                viewerList.mapNotNull { map[it.id] }.filter { it.isTrashed == isTrash }
+                viewerList.mapNotNull { map[it.id] }.filter {
+                    when {
+                        isTrash -> it.isTrashed
+                        isPrivateRouteViewer -> !it.isTrashed && it.isPrivate
+                        else -> !it.isTrashed && !it.isPrivate
+                    }
+                }
             }
             if (syncedList.isEmpty()) {
                 viewerRequest = null
@@ -345,9 +410,20 @@ fun GalleryApp() {
                     items = syncedList,
                     initialIndex = initialIdx.coerceIn(0, syncedList.lastIndex),
                     isTrashMode = isTrash,
+                    isPrivateMode = isPrivateRouteViewer,
                     onBack = { viewerRequest = null },
                     onToggleFavorite = { item ->
                         MediaRepository.toggleFavorite(context, item.id)
+                        refreshMedia()
+                    },
+                    onTogglePrivate = { item ->
+                        if (item.isPrivate) {
+                            MediaRepository.removeFromPrivate(context, listOf(item.id))
+                            Toast.makeText(context, "Removido do Álbum Privado", Toast.LENGTH_SHORT).show()
+                        } else {
+                            MediaRepository.moveToPrivate(context, listOf(item.id))
+                            Toast.makeText(context, "Movido para o Álbum Privado", Toast.LENGTH_SHORT).show()
+                        }
                         refreshMedia()
                     },
                     onEdit = { item -> editingItem = item },
@@ -376,6 +452,7 @@ fun GalleryApp() {
 
         val route = collectionRoute
         if (route != null) {
+            val isPrivateRoute = route is CollectionRoute.Private
             val (routeTitle, routeItems, isTrashRoute) = when (route) {
                 is CollectionRoute.Album -> Triple(
                     route.album.name,
@@ -401,6 +478,11 @@ fun GalleryApp() {
                     "Lixeira",
                     trashedItems,
                     true
+                )
+                CollectionRoute.Private -> Triple(
+                    "Álbum Privado",
+                    privateItems,
+                    false
                 )
             }
 
@@ -438,14 +520,39 @@ fun GalleryApp() {
                         }) {
                             Text("Esvaziar", color = colors.galleryRose, fontSize = 14.sp, fontWeight = FontWeight.Medium)
                         }
+                    } else if (isPrivateRoute) {
+                        TextButton(onClick = { openChangePrivatePin() }) {
+                            Text("PIN", color = colors.primaryBlue, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                        }
+                        if (routeItems.isNotEmpty()) {
+                            TextButton(onClick = {
+                                MediaRepository.removeFromPrivate(context, routeItems.map { it.id })
+                                refreshMedia()
+                                Toast.makeText(context, "Itens desbloqueados para a galeria", Toast.LENGTH_SHORT).show()
+                            }) {
+                                Text("Desbloquear", color = colors.primaryBlue, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                            }
+                        }
                     }
                 }
             ) {
                 if (routeItems.isEmpty()) {
                     EmptyStateCard(
-                        icon = if (isTrashRoute) Icons.Outlined.DeleteSweep else Icons.Outlined.PhotoLibrary,
-                        title = if (isTrashRoute) "Lixeira vazia" else "Nenhum item em $routeTitle",
-                        subtitle = if (isTrashRoute) "Itens excluídos ficam aqui antes da remoção permanente." else "As mídias correspondentes aparecerão aqui.",
+                        icon = when {
+                            isTrashRoute -> Icons.Outlined.DeleteSweep
+                            isPrivateRoute -> Icons.Outlined.Lock
+                            else -> Icons.Outlined.PhotoLibrary
+                        },
+                        title = when {
+                            isTrashRoute -> "Lixeira vazia"
+                            isPrivateRoute -> "Álbum Privado vazio"
+                            else -> "Nenhum item em $routeTitle"
+                        },
+                        subtitle = when {
+                            isTrashRoute -> "Itens excluídos ficam aqui antes da remoção permanente."
+                            isPrivateRoute -> "Selecione fotos ou toque em Privado no visualizador para ocultar itens com PIN."
+                            else -> "As mídias correspondentes aparecerão aqui."
+                        },
                         actionLabel = null,
                         onAction = null
                     )
@@ -484,7 +591,7 @@ fun GalleryApp() {
             GalleryTab.PICTURES -> "${displayedPictures.size} ${if (displayedPictures.size == 1) "foto" else "itens"} • ${albums.size} álbuns"
             GalleryTab.ALBUMS -> "${albums.size} ${if (albums.size == 1) "álbum" else "álbuns"}"
             GalleryTab.STORIES -> "${stories.size} ${if (stories.size == 1) "história" else "histórias"}"
-            GalleryTab.MENU -> "One UI 8 • Configurações"
+            GalleryTab.MENU -> "One UI 8.5 • Studio & Privacidade"
         }
 
         OneUICollapsingScaffold(
@@ -517,93 +624,145 @@ fun GalleryApp() {
                         )
                     }
                 } else {
-                    if (currentTab == GalleryTab.PICTURES) {
-                        IconButton(onClick = {
-                            showSearch = !showSearch
-                            if (!showSearch) searchQuery = ""
-                        }) {
-                            Icon(
-                                imageVector = Icons.Outlined.Search,
-                                contentDescription = "Pesquisar",
-                                tint = if (showSearch) colors.primaryBlue else colors.textPrimary
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(end = 6.dp)
+                    ) {
+                        // One UI 8.5 Create (+) Circular Glass Button
+                        Box {
+                            OneUICircularGlassAction(
+                                icon = Icons.Rounded.Add,
+                                description = "Criar colagem ou história",
+                                tint = colors.textPrimary,
+                                onClick = { showCreateMenu = true }
                             )
-                        }
-                    }
-
-                    // One UI Overflow Menu (⋮) with 22.dp Squircle Popup
-                    Box {
-                        IconButton(onClick = { showOverflowMenu = true }) {
-                            Icon(
-                                imageVector = Icons.Rounded.MoreVert,
-                                contentDescription = "Mais opções",
-                                tint = colors.textPrimary
-                            )
-                        }
-                        DropdownMenu(
-                            expanded = showOverflowMenu,
-                            onDismissRequest = { showOverflowMenu = false },
-                            modifier = Modifier
-                                .background(colors.popupMenu, OneUIShapeMenu)
-                                .clip(OneUIShapeMenu)
-                        ) {
-                            if (currentTab == GalleryTab.PICTURES && displayedPictures.isNotEmpty()) {
+                            DropdownMenu(
+                                expanded = showCreateMenu,
+                                onDismissRequest = { showCreateMenu = false },
+                                modifier = Modifier
+                                    .background(colors.popupMenu, OneUIShapeMenu)
+                                    .clip(OneUIShapeMenu)
+                            ) {
                                 DropdownMenuItem(
-                                    text = { Text("Editar / Selecionar", color = colors.textPrimary, fontSize = 15.sp) },
-                                    leadingIcon = { Icon(Icons.Outlined.CheckCircle, null, tint = colors.textPrimary) },
+                                    text = { Text("Criar Colagem (Studio)", color = colors.textPrimary, fontSize = 15.sp) },
+                                    leadingIcon = { Icon(Icons.Rounded.Dashboard, null, tint = colors.primaryBlue) },
+                                    onClick = {
+                                        showCreateMenu = false
+                                        val photos = activeItems.filter { !it.isVideo }.take(4)
+                                        if (photos.size >= 2) {
+                                            editingCollageItems = photos
+                                        } else {
+                                            Toast.makeText(context, "Precisa de pelo menos 2 fotos na galeria", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Criar História com IA", color = colors.textPrimary, fontSize = 15.sp) },
+                                    leadingIcon = { Icon(Icons.Rounded.AutoAwesome, null, tint = Color(0xFFFF9F0A)) },
+                                    onClick = {
+                                        showCreateMenu = false
+                                        storyPrompt = ""
+                                        showStoryAiDialog = true
+                                    }
+                                )
+                            }
+                        }
+
+                        if (currentTab == GalleryTab.PICTURES) {
+                            OneUICircularGlassAction(
+                                icon = Icons.Outlined.Search,
+                                description = "Pesquisar",
+                                tint = if (showSearch) colors.primaryBlue else colors.textPrimary,
+                                onClick = {
+                                    showSearch = !showSearch
+                                    if (!showSearch) searchQuery = ""
+                                }
+                            )
+                        }
+
+                        // One UI 8.5 Overflow Menu (⋮)
+                        Box {
+                            OneUICircularGlassAction(
+                                icon = Icons.Rounded.MoreVert,
+                                description = "Mais opções",
+                                tint = colors.textPrimary,
+                                onClick = { showOverflowMenu = true }
+                            )
+                            DropdownMenu(
+                                expanded = showOverflowMenu,
+                                onDismissRequest = { showOverflowMenu = false },
+                                modifier = Modifier
+                                    .background(colors.popupMenu, OneUIShapeMenu)
+                                    .clip(OneUIShapeMenu)
+                            ) {
+                                if (currentTab == GalleryTab.PICTURES && displayedPictures.isNotEmpty()) {
+                                    DropdownMenuItem(
+                                        text = { Text("Editar / Selecionar", color = colors.textPrimary, fontSize = 15.sp) },
+                                        leadingIcon = { Icon(Icons.Outlined.CheckCircle, null, tint = colors.textPrimary) },
+                                        onClick = {
+                                            showOverflowMenu = false
+                                            selectionMode = true
+                                            selectedIds.clear()
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = {
+                                            val nextCols = when (columnCount) {
+                                                3 -> 4
+                                                4 -> 5
+                                                5 -> 6
+                                                6 -> 2
+                                                else -> 3
+                                            }
+                                            Text("Colunas da grade ($columnCount → $nextCols)", color = colors.textPrimary, fontSize = 15.sp)
+                                        },
+                                        leadingIcon = { Icon(Icons.Outlined.GridView, null, tint = colors.textPrimary) },
+                                        onClick = {
+                                            showOverflowMenu = false
+                                            columnCount = when (columnCount) {
+                                                3 -> 4
+                                                4 -> 5
+                                                5 -> 6
+                                                6 -> 2
+                                                else -> 3
+                                            }
+                                            showDateHeaders = columnCount <= 5
+                                        }
+                                    )
+                                }
+                                DropdownMenuItem(
+                                    text = { Text("Álbum Privado (PIN)", color = colors.textPrimary, fontSize = 15.sp) },
+                                    leadingIcon = { Icon(Icons.Rounded.Lock, null, tint = colors.primaryBlue) },
                                     onClick = {
                                         showOverflowMenu = false
-                                        selectionMode = true
-                                        selectedIds.clear()
+                                        openPrivateAlbum()
                                     }
                                 )
                                 DropdownMenuItem(
                                     text = {
-                                        val nextCols = when (columnCount) {
-                                            3 -> 4
-                                            4 -> 5
-                                            5 -> 6
-                                            6 -> 2
-                                            else -> 3
-                                        }
-                                        Text("Colunas da grade ($columnCount → $nextCols)", color = colors.textPrimary, fontSize = 15.sp)
+                                        Text(
+                                            if (isDarkMode) "Mudar para Tema Claro" else "Mudar para Tema Escuro",
+                                            color = colors.textPrimary,
+                                            fontSize = 15.sp
+                                        )
                                     },
-                                    leadingIcon = { Icon(Icons.Outlined.GridView, null, tint = colors.textPrimary) },
+                                    leadingIcon = { Icon(Icons.Outlined.DarkMode, null, tint = colors.textPrimary) },
                                     onClick = {
                                         showOverflowMenu = false
-                                        columnCount = when (columnCount) {
-                                            3 -> 4
-                                            4 -> 5
-                                            5 -> 6
-                                            6 -> 2
-                                            else -> 3
-                                        }
-                                        showDateHeaders = columnCount <= 5
+                                        isDarkMode = !isDarkMode
+                                        MediaRepository.setDarkMode(context, isDarkMode)
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Gerar 12 fotos de exemplo", color = colors.primaryBlue, fontSize = 15.sp) },
+                                    leadingIcon = { Icon(Icons.Rounded.AutoAwesome, null, tint = colors.primaryBlue) },
+                                    onClick = {
+                                        showOverflowMenu = false
+                                        triggerSampleGeneration()
                                     }
                                 )
                             }
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        if (isDarkMode) "Mudar para Tema Claro" else "Mudar para Tema Escuro",
-                                        color = colors.textPrimary,
-                                        fontSize = 15.sp
-                                    )
-                                },
-                                leadingIcon = { Icon(Icons.Outlined.DarkMode, null, tint = colors.textPrimary) },
-                                onClick = {
-                                    showOverflowMenu = false
-                                    isDarkMode = !isDarkMode
-                                    MediaRepository.setDarkMode(context, isDarkMode)
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Gerar 12 fotos de exemplo", color = colors.primaryBlue, fontSize = 15.sp) },
-                                leadingIcon = { Icon(Icons.Rounded.AutoAwesome, null, tint = colors.primaryBlue) },
-                                onClick = {
-                                    showOverflowMenu = false
-                                    triggerSampleGeneration()
-                                }
-                            )
                         }
                     }
                 }
@@ -665,8 +824,12 @@ fun GalleryApp() {
             },
             bottomBar = {
                 if (selectionMode) {
+                    val selectedPhotos = remember(displayedPictures, selectedIds.size) {
+                        displayedPictures.filter { selectedIds.contains(it.id) && !it.isVideo }
+                    }
                     SelectionBottomBar(
                         selectedCount = selectedIds.size,
+                        canCollage = selectedPhotos.size in 2..6,
                         onShare = {
                             val itemsToShare = displayedPictures.filter { selectedIds.contains(it.id) }
                             shareItems(itemsToShare)
@@ -677,6 +840,16 @@ fun GalleryApp() {
                             selectedIds.clear()
                             refreshMedia()
                             Toast.makeText(context, "Adicionado aos Favoritos", Toast.LENGTH_SHORT).show()
+                        },
+                        onCollage = {
+                            editingCollageItems = selectedPhotos
+                        },
+                        onPrivate = {
+                            MediaRepository.moveToPrivate(context, selectedIds.toList())
+                            selectionMode = false
+                            selectedIds.clear()
+                            refreshMedia()
+                            Toast.makeText(context, "Movido para o Álbum Privado", Toast.LENGTH_SHORT).show()
                         },
                         onDelete = {
                             MediaRepository.moveToTrash(context, selectedIds.toList())
@@ -779,6 +952,7 @@ fun GalleryApp() {
                     AlbumsTabContent(
                         albums = albums,
                         activeItems = activeItems,
+                        privateCount = privateItems.size,
                         trashedCount = trashedItems.size,
                         selectedFilter = albumFilter,
                         onSelectFilter = { albumFilter = it },
@@ -786,6 +960,7 @@ fun GalleryApp() {
                         onOpenFavorites = { collectionRoute = CollectionRoute.Favorites },
                         onOpenVideos = { collectionRoute = CollectionRoute.Videos },
                         onOpenRecent = { collectionRoute = CollectionRoute.Recent },
+                        onOpenPrivate = { openPrivateAlbum() },
                         onOpenTrash = { collectionRoute = CollectionRoute.Trash },
                         onGenerateSamples = { triggerSampleGeneration() },
                         isGenerating = isGeneratingSamples
@@ -796,6 +971,10 @@ fun GalleryApp() {
                     StoriesTabContent(
                         stories = stories,
                         onPlayStory = { story -> activeStory = story },
+                        onCreateAiStory = {
+                            storyPrompt = ""
+                            showStoryAiDialog = true
+                        },
                         onGenerateSamples = { triggerSampleGeneration() },
                         isGenerating = isGeneratingSamples
                     )
@@ -806,12 +985,15 @@ fun GalleryApp() {
                         favoritesCount = activeItems.count { it.isFavorite },
                         videosCount = activeItems.count { it.isVideo },
                         recentCount = activeItems.take(30).size,
+                        privateCount = privateItems.size,
                         trashCount = trashedItems.size,
                         isDarkMode = isDarkMode,
                         isGenerating = isGeneratingSamples,
                         onOpenFavorites = { collectionRoute = CollectionRoute.Favorites },
                         onOpenVideos = { collectionRoute = CollectionRoute.Videos },
                         onOpenRecent = { collectionRoute = CollectionRoute.Recent },
+                        onOpenPrivate = { openPrivateAlbum() },
+                        onChangePrivatePin = { openChangePrivatePin() },
                         onOpenTrash = { collectionRoute = CollectionRoute.Trash },
                         onGenerateSamples = { triggerSampleGeneration() },
                         onToggleDarkMode = { dark ->
@@ -821,6 +1003,187 @@ fun GalleryApp() {
                     )
                 }
             }
+        }
+
+        if (showPinDialogMode != null) {
+            val isChanging = showPinDialogMode == "change_pin"
+            AlertDialog(
+                onDismissRequest = { showPinDialogMode = null },
+                containerColor = colors.surfaceCard,
+                shape = OneUIShapeMedium,
+                title = {
+                    Text(
+                        text = if (isChanging) "Alterar PIN do Álbum Privado" else "Álbum Privado",
+                        color = colors.textPrimary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(
+                            text = if (isChanging) {
+                                "Digite um novo PIN de 4 dígitos para proteger suas fotos privadas."
+                            } else {
+                                "Digite o PIN de 4 dígitos (padrão: 0000)."
+                            },
+                            color = colors.textSecondary,
+                            fontSize = 13.sp
+                        )
+                        OutlinedTextField(
+                            value = pinInput,
+                            onValueChange = { v ->
+                                val digits = v.filter { it.isDigit() }.take(4)
+                                pinInput = digits
+                                pinError = null
+                            },
+                            singleLine = true,
+                            label = { Text("PIN (4 dígitos)") },
+                            visualTransformation = PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                            isError = pinError != null,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        if (pinError != null) {
+                            Text(
+                                text = pinError!!,
+                                color = colors.galleryRose,
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            if (isChanging) {
+                                if (pinInput.length == 4) {
+                                    MediaRepository.setPrivatePin(context, pinInput)
+                                    showPinDialogMode = null
+                                    Toast.makeText(context, "PIN atualizado!", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    pinError = "O PIN deve ter exatamente 4 números."
+                                }
+                            } else {
+                                val expected = MediaRepository.getPrivatePin(context)
+                                if (pinInput == expected) {
+                                    showPinDialogMode = null
+                                    collectionRoute = CollectionRoute.Private
+                                } else {
+                                    pinError = "PIN incorreto. Tente novamente."
+                                }
+                            }
+                        }
+                    ) {
+                        Text(
+                            text = if (isChanging) "Salvar" else "Desbloquear",
+                            color = colors.primaryBlue,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showPinDialogMode = null }) {
+                        Text("Cancelar", color = colors.textSecondary)
+                    }
+                }
+            )
+        }
+
+        if (showStoryAiDialog) {
+            AlertDialog(
+                onDismissRequest = { showStoryAiDialog = false },
+                containerColor = colors.surfaceCard,
+                shape = OneUIShapeMedium,
+                title = {
+                    Text("Criar História com IA", color = colors.textPrimary, fontWeight = FontWeight.SemiBold)
+                },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(
+                            text = "Descreva o tema, álbum ou momento desejado (ex: Favoritos, Câmera, Editadas, Viagem):",
+                            color = colors.textSecondary,
+                            fontSize = 13.sp
+                        )
+                        OutlinedTextField(
+                            value = storyPrompt,
+                            onValueChange = { storyPrompt = it },
+                            singleLine = true,
+                            placeholder = { Text("Ex: Melhores momentos favoritos") },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            val promptClean = storyPrompt.trim().ifBlank { "Destaques com IA" }
+                            val tokens = promptClean.lowercase().split(" ", ",", ".").filter { it.length >= 3 }
+                            val matched = activeItems.filter { item ->
+                                when {
+                                    "favorit" in promptClean.lowercase() -> item.isFavorite
+                                    "vídeo" in promptClean.lowercase() || "video" in promptClean.lowercase() -> item.isVideo
+                                    tokens.isEmpty() -> true
+                                    else -> tokens.any { t ->
+                                        item.name.contains(t, ignoreCase = true) ||
+                                            item.bucketName.contains(t, ignoreCase = true)
+                                    }
+                                }
+                            }.ifEmpty { activeItems }.take(10)
+
+                            if (matched.isNotEmpty()) {
+                                val newStory = StoryItem(
+                                    id = "ai_story_${System.currentTimeMillis()}",
+                                    title = promptClean,
+                                    subtitle = "✨ Criada por IA • ${matched.size} itens",
+                                    coverUri = matched.first().uri,
+                                    items = matched
+                                )
+                                customStories = listOf(newStory) + customStories
+                                showStoryAiDialog = false
+                                currentTab = GalleryTab.STORIES
+                                activeStory = newStory
+                            } else {
+                                Toast.makeText(context, "Nenhuma mídia encontrada para criar história.", Toast.LENGTH_SHORT).show()
+                                showStoryAiDialog = false
+                            }
+                        }
+                    ) {
+                        Text("Gerar", color = colors.primaryBlue, fontWeight = FontWeight.SemiBold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showStoryAiDialog = false }) {
+                        Text("Cancelar", color = colors.textSecondary)
+                    }
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun OneUICircularGlassAction(
+    icon: ImageVector,
+    description: String,
+    tint: Color,
+    onClick: () -> Unit
+) {
+    val colors = LocalOneUIColors.current
+    Surface(
+        onClick = onClick,
+        shape = CircleShape,
+        color = colors.floatingPill,
+        modifier = Modifier
+            .size(38.dp)
+            .border(0.6.dp, colors.floatingBorder, CircleShape)
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                imageVector = icon,
+                contentDescription = description,
+                tint = tint,
+                modifier = Modifier.size(20.dp)
+            )
         }
     }
 }
@@ -1098,6 +1461,7 @@ private fun OneUIGridThumbnail(
 private fun AlbumsTabContent(
     albums: List<AlbumItem>,
     activeItems: List<MediaItem>,
+    privateCount: Int,
     trashedCount: Int,
     selectedFilter: AlbumFilter,
     onSelectFilter: (AlbumFilter) -> Unit,
@@ -1105,6 +1469,7 @@ private fun AlbumsTabContent(
     onOpenFavorites: () -> Unit,
     onOpenVideos: () -> Unit,
     onOpenRecent: () -> Unit,
+    onOpenPrivate: () -> Unit,
     onOpenTrash: () -> Unit,
     onGenerateSamples: () -> Unit,
     isGenerating: Boolean
@@ -1176,6 +1541,16 @@ private fun AlbumsTabContent(
                         icon = Icons.Outlined.VideoLibrary,
                         accent = Color(0xFF34C759),
                         onClick = onOpenVideos
+                    )
+                }
+                item {
+                    OneUI8StackedCard(
+                        title = "Privado",
+                        count = privateCount,
+                        coverUri = null,
+                        icon = Icons.Rounded.Lock,
+                        accent = colors.primaryBlue,
+                        onClick = onOpenPrivate
                     )
                 }
                 item {
@@ -1402,6 +1777,7 @@ private fun OneUI8StackedCard(
 private fun StoriesTabContent(
     stories: List<StoryItem>,
     onPlayStory: (StoryItem) -> Unit,
+    onCreateAiStory: () -> Unit,
     onGenerateSamples: () -> Unit,
     isGenerating: Boolean
 ) {
@@ -1424,6 +1800,58 @@ private fun StoriesTabContent(
         verticalArrangement = Arrangement.spacedBy(16.dp),
         modifier = Modifier.fillMaxSize()
     ) {
+        item {
+            Surface(
+                onClick = onCreateAiStory,
+                shape = OneUIShapeLarge,
+                color = colors.surfaceCard,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(0.6.dp, colors.primaryBlue.copy(alpha = 0.4f), OneUIShapeLarge)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 18.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = colors.primaryBlue.copy(alpha = 0.16f),
+                        modifier = Modifier.size(40.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Rounded.AutoAwesome,
+                                contentDescription = null,
+                                tint = colors.primaryBlue,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Criar história com IA",
+                            color = colors.textPrimary,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "Descreva um tema ou filtro (ex: Favoritos, Editadas)",
+                            color = colors.textSecondary,
+                            fontSize = 12.sp
+                        )
+                    }
+                    Icon(
+                        imageVector = Icons.Rounded.ChevronRight,
+                        contentDescription = null,
+                        tint = colors.textSecondary
+                    )
+                }
+            }
+        }
+
         items(stories, key = { it.id }) { story ->
             Box(
                 modifier = Modifier
@@ -1504,8 +1932,16 @@ private fun StoryPlayerOverlay(
     val context = LocalContext.current
     var currentIndex by remember(story.id) { mutableIntStateOf(0) }
     var progress by remember(story.id, currentIndex) { mutableFloatStateOf(0f) }
+    val kenBurnsScale = remember(story.id, currentIndex) { Animatable(1.0f) }
 
     LaunchedEffect(story.id, currentIndex) {
+        kenBurnsScale.snapTo(1.0f)
+        launch {
+            kenBurnsScale.animateTo(
+                targetValue = 1.10f,
+                animationSpec = tween(durationMillis = 3500, easing = LinearEasing)
+            )
+        }
         progress = 0f
         val steps = 70
         for (i in 1..steps) {
@@ -1542,7 +1978,12 @@ private fun StoryPlayerOverlay(
                 .build(),
             contentDescription = currentMedia.name,
             contentScale = ContentScale.Fit,
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    scaleX = kenBurnsScale.value
+                    scaleY = kenBurnsScale.value
+                }
         )
 
         Column(
@@ -1607,12 +2048,15 @@ private fun MenuTabContent(
     favoritesCount: Int,
     videosCount: Int,
     recentCount: Int,
+    privateCount: Int,
     trashCount: Int,
     isDarkMode: Boolean,
     isGenerating: Boolean,
     onOpenFavorites: () -> Unit,
     onOpenVideos: () -> Unit,
     onOpenRecent: () -> Unit,
+    onOpenPrivate: () -> Unit,
+    onChangePrivatePin: () -> Unit,
     onOpenTrash: () -> Unit,
     onGenerateSamples: () -> Unit,
     onToggleDarkMode: (Boolean) -> Unit
@@ -1649,6 +2093,22 @@ private fun MenuTabContent(
                         title = "Recentes",
                         trailingValue = "$recentCount",
                         onClick = onOpenRecent
+                    )
+                    HorizontalDivider(color = colors.divider, modifier = Modifier.padding(horizontal = 20.dp))
+                    OneUIMenuRow(
+                        icon = Icons.Rounded.Lock,
+                        iconTint = colors.primaryBlue,
+                        title = "Álbum Privado (PIN)",
+                        trailingValue = "$privateCount",
+                        onClick = onOpenPrivate
+                    )
+                    HorizontalDivider(color = colors.divider, modifier = Modifier.padding(horizontal = 20.dp))
+                    OneUIMenuRow(
+                        icon = Icons.Outlined.Lock,
+                        iconTint = colors.textSecondary,
+                        title = "Alterar PIN do Álbum Privado",
+                        trailingValue = "••••",
+                        onClick = onChangePrivatePin
                     )
                     HorizontalDivider(color = colors.divider, modifier = Modifier.padding(horizontal = 20.dp))
                     OneUIMenuRow(
@@ -1717,14 +2177,14 @@ private fun MenuTabContent(
             OneUISectionCard {
                 Column(modifier = Modifier.padding(20.dp)) {
                     Text(
-                        text = "Galeria One UI 7 / 8",
+                        text = "Galeria One UI 8.5",
                         color = colors.textPrimary,
                         fontSize = 16.sp,
                         fontWeight = FontWeight.SemiBold
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "Interface inspirada na Samsung One UI 7/8 com barra flutuante em cápsula, cartões empilhados, deslize para cima com EXIF + histograma, remasterização instantânea e editor integrado.",
+                        text = "Interface inspirada na Samsung One UI 8.5 com Álbum Privado protegido por PIN, Estúdio de Colagens, comparação Antes/Depois de Remasterização IA, IA Assist por prompt e Histórias IA com movimento Ken Burns.",
                         color = colors.textSecondary,
                         fontSize = 13.sp,
                         lineHeight = 18.sp
@@ -1883,8 +2343,11 @@ private fun OneUIFloatingCapsuleBottomBar(
 @Composable
 private fun SelectionBottomBar(
     selectedCount: Int,
+    canCollage: Boolean,
     onShare: () -> Unit,
     onFavorite: () -> Unit,
+    onCollage: () -> Unit,
+    onPrivate: () -> Unit,
     onDelete: () -> Unit
 ) {
     val colors = LocalOneUIColors.current
@@ -1899,7 +2362,7 @@ private fun SelectionBottomBar(
                     .fillMaxWidth()
                     .navigationBarsPadding()
                     .height(62.dp)
-                    .padding(horizontal = 16.dp),
+                    .padding(horizontal = 8.dp),
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -1916,6 +2379,20 @@ private fun SelectionBottomBar(
                     enabled = selectedCount > 0,
                     tint = colors.galleryRose,
                     onClick = onFavorite
+                )
+                SelectionActionButton(
+                    icon = Icons.Rounded.Dashboard,
+                    label = "Colagem",
+                    enabled = canCollage,
+                    tint = colors.primaryBlue,
+                    onClick = onCollage
+                )
+                SelectionActionButton(
+                    icon = Icons.Rounded.Lock,
+                    label = "Privado",
+                    enabled = selectedCount > 0,
+                    tint = colors.primaryBlue,
+                    onClick = onPrivate
                 )
                 SelectionActionButton(
                     icon = Icons.Outlined.Delete,

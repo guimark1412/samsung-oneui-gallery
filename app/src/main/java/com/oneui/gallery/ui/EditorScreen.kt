@@ -38,6 +38,7 @@ import androidx.compose.material.icons.outlined.Crop
 import androidx.compose.material.icons.outlined.Flip
 import androidx.compose.material.icons.outlined.TextFields
 import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.AlertDialog
@@ -49,6 +50,7 @@ import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
@@ -104,7 +106,8 @@ private enum class EditorTab(val label: String, val icon: ImageVector) {
     TRANSFORM("Transformar", Icons.Outlined.Crop),
     FILTERS("Filtros", Icons.Outlined.AutoAwesome),
     TONE("Ajustes", Icons.Outlined.Tune),
-    DRAW("Desenhar", Icons.Outlined.Brush)
+    DRAW("Desenhar", Icons.Outlined.Brush),
+    AI_ASSIST("IA Assist", Icons.Rounded.AutoAwesome)
 }
 
 @Composable
@@ -141,6 +144,87 @@ fun EditorScreen(
 
     var previewSize by remember { mutableStateOf(IntSize.Zero) }
     var isSaving by remember { mutableStateOf(false) }
+    var aiPrompt by remember { mutableStateOf("") }
+    var aiAppliedFeedback by remember { mutableStateOf<String?>(null) }
+
+    fun applyAiAssistStyle(query: String) {
+        val q = query.lowercase()
+        when {
+            "p&b" in q || "preto" in q || "branco" in q || "mono" in q || "b&w" in q -> {
+                selectedFilter = BuiltInFilters.presets.firstOrNull { it.id == "mono" } ?: BuiltInFilters.presets.first()
+                brightness = 0.02f
+                contrast = 1.24f
+                saturation = 0f
+                warmth = 0f
+                vignette = 0.28f
+                aiAppliedFeedback = "Estilo B&W Drama aplicado"
+            }
+            "noite" in q || "noturn" in q || "escuro" in q || "clarear" in q -> {
+                selectedFilter = BuiltInFilters.presets.firstOrNull { it.id == "vivid" } ?: BuiltInFilters.presets.first()
+                brightness = 0.16f
+                contrast = 1.10f
+                saturation = 1.12f
+                warmth = 0.04f
+                vignette = 0f
+                aiAppliedFeedback = "Otimização Noturna IA aplicada"
+            }
+            "cinema" in q || "teal" in q || "filme" in q && "retr" !in q -> {
+                selectedFilter = BuiltInFilters.presets.firstOrNull { it.id == "cool" } ?: BuiltInFilters.presets.first()
+                brightness = -0.02f
+                contrast = 1.20f
+                saturation = 0.92f
+                warmth = -0.14f
+                vignette = 0.26f
+                aiAppliedFeedback = "Color grading Cinema aplicado"
+            }
+            "retrô" in q || "retro" in q || "vintage" in q || "nostalg" in q || "filme" in q -> {
+                selectedFilter = BuiltInFilters.presets.firstOrNull { it.id == "vintage" } ?: BuiltInFilters.presets.first()
+                brightness = 0.04f
+                contrast = 1.06f
+                saturation = 0.88f
+                warmth = 0.22f
+                vignette = 0.30f
+                aiAppliedFeedback = "Tom Retrô Filme aplicado"
+            }
+            "retrato" in q || "suave" in q || "pele" in q -> {
+                selectedFilter = BuiltInFilters.presets.firstOrNull { it.id == "warm" } ?: BuiltInFilters.presets.first()
+                brightness = 0.06f
+                contrast = 0.98f
+                saturation = 1.05f
+                warmth = 0.14f
+                vignette = 0.14f
+                aiAppliedFeedback = "Retrato Suave IA aplicado"
+            }
+            "frio" in q || "azul" in q || "gelo" in q -> {
+                selectedFilter = BuiltInFilters.presets.firstOrNull { it.id == "cool" } ?: BuiltInFilters.presets.first()
+                brightness = 0.03f
+                contrast = 1.08f
+                saturation = 1.08f
+                warmth = -0.25f
+                vignette = 0.10f
+                aiAppliedFeedback = "Atmosfera Fria aplicada"
+            }
+            "quente" in q || "sol" in q || "dourad" in q || "pôr" in q -> {
+                selectedFilter = BuiltInFilters.presets.firstOrNull { it.id == "warm" } ?: BuiltInFilters.presets.first()
+                brightness = 0.05f
+                contrast = 1.10f
+                saturation = 1.18f
+                warmth = 0.30f
+                vignette = 0.12f
+                aiAppliedFeedback = "Luz Dourada aplicada"
+            }
+            else -> {
+                // Default Galaxy AI HDR Vivid remaster
+                selectedFilter = BuiltInFilters.presets.firstOrNull { it.id == "vivid" } ?: BuiltInFilters.presets.first()
+                brightness = 0.05f
+                contrast = 1.16f
+                saturation = 1.22f
+                warmth = 0.06f
+                vignette = 0.10f
+                aiAppliedFeedback = "Brilho HDR Galaxy AI aplicado"
+            }
+        }
+    }
 
     val liveColorMatrix = remember(selectedFilter, brightness, contrast, saturation, warmth) {
         val androidMatrix = MediaRepository.buildCombinedColorMatrix(
@@ -178,6 +262,8 @@ fun EditorScreen(
         vignette = 0f
         strokes.clear()
         overlayTexts.clear()
+        aiPrompt = ""
+        aiAppliedFeedback = null
     }
 
     Column(
@@ -420,11 +506,12 @@ fun EditorScreen(
                                 )
                             }
                             Spacer(modifier = Modifier.height(10.dp))
-                            Row(
+                            LazyRow(
                                 modifier = Modifier.fillMaxWidth(),
+                                contentPadding = PaddingValues(horizontal = 12.dp),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)
                             ) {
-                                CropAspect.entries.forEach { aspect ->
+                                items(CropAspect.entries) { aspect ->
                                     val selected = cropAspect == aspect
                                     FilterChip(
                                         selected = selected,
@@ -605,13 +692,95 @@ fun EditorScreen(
                             }
                         }
                     }
+
+                    EditorTab.AI_ASSIST -> {
+                        val aiPresets = listOf(
+                            "Brilho HDR" to "hdr",
+                            "Noite Nítida" to "noite",
+                            "Cinema Teal" to "cinema",
+                            "Retrato Suave" to "retrato",
+                            "Retrô Filme" to "vintage",
+                            "B&W Drama" to "p&b"
+                        )
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 4.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                OutlinedTextField(
+                                    value = aiPrompt,
+                                    onValueChange = { aiPrompt = it },
+                                    singleLine = true,
+                                    placeholder = {
+                                        Text(
+                                            "Ex: tom de filme quente, noite nítida...",
+                                            color = Color(0x88FFFFFF),
+                                            fontSize = 13.sp
+                                        )
+                                    },
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedTextColor = Color.White,
+                                        unfocusedTextColor = Color.White,
+                                        focusedBorderColor = colors.primaryBlue,
+                                        unfocusedBorderColor = Color(0x44FFFFFF)
+                                    ),
+                                    shape = RoundedCornerShape(18.dp),
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Button(
+                                    onClick = {
+                                        applyAiAssistStyle(aiPrompt.ifBlank { "hdr" })
+                                    },
+                                    shape = RoundedCornerShape(18.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = colors.primaryBlue),
+                                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp)
+                                ) {
+                                    Text("Aplicar", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                                }
+                            }
+                            LazyRow(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                items(aiPresets) { (label, key) ->
+                                    FilterChip(
+                                        selected = aiAppliedFeedback?.contains(label.split(" ").first(), ignoreCase = true) == true,
+                                        onClick = {
+                                            aiPrompt = label
+                                            applyAiAssistStyle(key)
+                                        },
+                                        label = { Text(label, fontSize = 12.sp) },
+                                        colors = FilterChipDefaults.filterChipColors(
+                                            containerColor = Color(0xFF25252A),
+                                            labelColor = Color.White,
+                                            selectedContainerColor = colors.primaryBlue,
+                                            selectedLabelColor = Color.White
+                                        )
+                                    )
+                                }
+                            }
+                            if (aiAppliedFeedback != null) {
+                                Text(
+                                    text = "✨ ${aiAppliedFeedback}",
+                                    color = colors.primaryBlue,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                        }
+                    }
                 }
 
                 // Bottom Editor Mode Selector
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = 4.dp, start = 12.dp, end = 12.dp),
+                        .padding(top = 4.dp, start = 8.dp, end = 8.dp),
                     horizontalArrangement = Arrangement.SpaceEvenly
                 ) {
                     EditorTab.entries.forEach { tab ->
@@ -621,7 +790,7 @@ fun EditorScreen(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(14.dp))
                                 .clickable { activeTab = tab }
-                                .padding(horizontal = 14.dp, vertical = 6.dp)
+                                .padding(horizontal = 8.dp, vertical = 6.dp)
                         ) {
                             Icon(
                                 imageVector = tab.icon,
