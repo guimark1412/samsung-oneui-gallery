@@ -2651,7 +2651,7 @@ private fun MenuTabContent(
                                 modifier = Modifier.size(18.dp)
                             )
                             Text(
-                                text = "Para Manuela Almeida ♥",
+                                text = "Para Manuela Almeida",
                                 color = colors.textPrimary,
                                 fontSize = 14.sp,
                                 fontWeight = FontWeight.SemiBold
@@ -2659,7 +2659,7 @@ private fun MenuTabContent(
                         }
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            text = "Galeria feita especialmente e unicamente para Manuela Almeida — pensada em cada detalhe para guardar seus melhores sorrisos, memórias e momentos especiais com todo o carinho que você merece, Manu.",
+                            text = "Galeria feita especialmente e unicamente para Manuela Almeida — um espaço leve e organizado para suas fotos e lembranças.",
                             color = colors.textPrimary.copy(alpha = 0.88f),
                             fontSize = 13.sp,
                             lineHeight = 19.sp
