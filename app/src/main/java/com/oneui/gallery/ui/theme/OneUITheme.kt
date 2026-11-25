@@ -83,22 +83,22 @@ data class OneUIColorPalette(
     val selectionScrim: Color
 )
 
-// Paleta "Grafite moderno" com profundidade sutil e visual premium
+// Paleta escura profunda (#09090B / #121215 / #1C1C20)
 val DarkOneUIColors = OneUIColorPalette(
     isDark = true,
-    background = Color(0xFF141416),
-    surfaceCard = Color(0xFF1C1C1F),
-    surfaceElevated = Color(0xFF27272B),
-    popupMenu = Color(0xFF232327),
-    floatingPill = Color(0xF01C1C1F),
-    floatingBorder = Color(0xFF27272B),
+    background = Color(0xFF09090B),
+    surfaceCard = Color(0xFF121215),
+    surfaceElevated = Color(0xFF1C1C20),
+    popupMenu = Color(0xFF17171B),
+    floatingPill = Color(0xF0121215),
+    floatingBorder = Color(0xFF1C1C20),
     primaryBlue = Color(0xFF4785FF),
     galleryRose = Color(0xFFF53855),
     aiAccent = Color(0xFF4785FF),
-    textPrimary = Color(0xFFF2F2F5),
-    textSecondary = Color(0xFF9A9AA3),
-    divider = Color(0xFF27272B),
-    bottomBar = Color(0xF01C1C1F),
+    textPrimary = Color(0xFFF4F4F5),
+    textSecondary = Color(0xFF8E8E93),
+    divider = Color(0xFF1C1C20),
+    bottomBar = Color(0xF0121215),
     selectionScrim = Color(0x384785FF)
 )
 
