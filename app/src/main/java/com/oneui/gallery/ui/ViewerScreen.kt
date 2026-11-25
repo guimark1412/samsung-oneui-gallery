@@ -106,6 +106,9 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
@@ -117,6 +120,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
@@ -1007,6 +1011,62 @@ fun ViewerScreen(
                     }
                     .navigationBarsPadding()
             ) {
+                val detailsScrollState = rememberScrollState()
+                LaunchedEffect(isInfoExpanded) {
+                    if (!isInfoExpanded) {
+                        detailsScrollState.scrollTo(0)
+                    }
+                }
+                var detailsSheetDragActive by remember { mutableStateOf(false) }
+                val detailsNestedScroll = remember(sheetHeightPx) {
+                    object : NestedScrollConnection {
+                        override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                            if (source == NestedScrollSource.Drag && available.y < 0f && (detailsSheetDragActive || infoAnim.value < 0.999f)) {
+                                val next = (infoAnim.value - (available.y / sheetHeightPx)).coerceIn(0f, 1f)
+                                if (next >= 0.999f) detailsSheetDragActive = false
+                                scope.launch { infoAnim.snapTo(next) }
+                                return Offset(0f, available.y)
+                            }
+                            return Offset.Zero
+                        }
+
+                        override fun onPostScroll(
+                            consumed: Offset,
+                            available: Offset,
+                            source: NestedScrollSource
+                        ): Offset {
+                            if (source == NestedScrollSource.Drag && available.y > 0f && detailsScrollState.value == 0) {
+                                detailsSheetDragActive = true
+                                val next = (infoAnim.value - (available.y / sheetHeightPx)).coerceIn(0f, 1f)
+                                scope.launch { infoAnim.snapTo(next) }
+                                return Offset(0f, available.y)
+                            }
+                            return Offset.Zero
+                        }
+
+                        override suspend fun onPreFling(available: Velocity): Velocity {
+                            if (detailsSheetDragActive || infoAnim.value < 0.995f) {
+                                detailsSheetDragActive = false
+                                if (infoAnim.value < 0.72f || available.y > 750f) {
+                                    isInfoExpanded = false
+                                } else {
+                                    scope.launch {
+                                        infoAnim.animateTo(
+                                            targetValue = 1f,
+                                            animationSpec = spring(
+                                                dampingRatio = 0.90f,
+                                                stiffness = 280f
+                                            )
+                                        )
+                                    }
+                                }
+                                return available
+                            }
+                            return Velocity.Zero
+                        }
+                    }
+                }
+
                 Column(modifier = Modifier.fillMaxSize()) {
                     // Drag handle header (interactive vertical drag down or tap arrow to collapse)
                     Column(
@@ -1022,8 +1082,8 @@ fun ViewerScreen(
                                                 infoAnim.animateTo(
                                                     targetValue = 0f,
                                                     animationSpec = spring(
-                                                        dampingRatio = Spring.DampingRatioNoBouncy,
-                                                        stiffness = Spring.StiffnessMediumLow
+                                                        dampingRatio = 0.90f,
+                                                        stiffness = 280f
                                                     )
                                                 )
                                             }
@@ -1032,8 +1092,8 @@ fun ViewerScreen(
                                                 infoAnim.animateTo(
                                                     targetValue = 1f,
                                                     animationSpec = spring(
-                                                        dampingRatio = Spring.DampingRatioNoBouncy,
-                                                        stiffness = Spring.StiffnessMediumLow
+                                                        dampingRatio = 0.90f,
+                                                        stiffness = 280f
                                                     )
                                                 )
                                             }
@@ -1044,8 +1104,8 @@ fun ViewerScreen(
                                             infoAnim.animateTo(
                                                 targetValue = if (isInfoExpanded) 1f else 0f,
                                                 animationSpec = spring(
-                                                    dampingRatio = Spring.DampingRatioNoBouncy,
-                                                    stiffness = Spring.StiffnessMediumLow
+                                                    dampingRatio = 0.90f,
+                                                    stiffness = 280f
                                                 )
                                             )
                                         }
@@ -1094,7 +1154,8 @@ fun ViewerScreen(
                     Column(
                         modifier = Modifier
                             .weight(1f)
-                            .verticalScroll(rememberScrollState())
+                            .nestedScroll(detailsNestedScroll)
+                            .verticalScroll(detailsScrollState)
                             .padding(horizontal = 18.dp, vertical = 6.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {

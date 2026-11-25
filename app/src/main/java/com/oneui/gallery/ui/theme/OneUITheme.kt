@@ -33,6 +33,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -40,6 +41,7 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -227,13 +229,20 @@ fun OneUICollapsingScaffold(
 
     var collapseOffsetPx by remember { mutableFloatStateOf(0f) }
     var rawOverscrollPx by remember { mutableFloatStateOf(0f) }
+    var dragRubberPx by remember { mutableFloatStateOf(0f) }
+    var isRubberDragging by remember { mutableStateOf(false) }
+    var wasDraggedIntoRubber by remember { mutableStateOf(false) }
     val rubberBandAnim = remember { Animatable(0f) }
 
     fun releaseRubberBand(initialVelocity: Float = 0f) {
+        val start = if (isRubberDragging) dragRubberPx else rubberBandAnim.value
+        isRubberDragging = false
+        dragRubberPx = 0f
         rawOverscrollPx = 0f
-        if (abs(rubberBandAnim.value) > 0.5f || abs(initialVelocity) > 220f) {
+        if (abs(start) > 0.5f || abs(initialVelocity) > 260f) {
             scope.launch {
-                val spec = if (abs(initialVelocity) > 220f) {
+                rubberBandAnim.snapTo(start)
+                val spec = if (abs(initialVelocity) > 260f) {
                     spring<Float>(dampingRatio = 0.88f, stiffness = 210f)
                 } else {
                     spring<Float>(dampingRatio = 0.92f, stiffness = 240f)
@@ -250,6 +259,9 @@ fun OneUICollapsingScaffold(
     LaunchedEffect(title) {
         collapseOffsetPx = 0f
         rawOverscrollPx = 0f
+        dragRubberPx = 0f
+        isRubberDragging = false
+        wasDraggedIntoRubber = false
         rubberBandAnim.snapTo(0f)
     }
 
@@ -257,12 +269,13 @@ fun OneUICollapsingScaffold(
         object : NestedScrollConnection {
             override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
                 val delta = available.y
-                // 1. Se estava esticado (ou voltando do bounce) e o dedo reverteu o sentido, recolhe suavemente
-                if (source == NestedScrollSource.Drag && (abs(rawOverscrollPx) > 0.5f || abs(rubberBandAnim.value) > 0.5f)) {
+                val currentRubber = if (isRubberDragging) dragRubberPx else rubberBandAnim.value
+                // 1. Se estava esticado (ou voltando do bounce) e o dedo reverteu o sentido, recolhe suavemente 1:1
+                if (source == NestedScrollSource.Drag && (abs(rawOverscrollPx) > 0.5f || abs(currentRubber) > 0.5f)) {
                     val activeOffset = if (abs(rawOverscrollPx) > 0.5f) {
                         rawOverscrollPx
                     } else {
-                        inverseIosRubberBand(rubberBandAnim.value, rubberDimensionPx).also {
+                        inverseIosRubberBand(currentRubber, rubberDimensionPx).also {
                             rawOverscrollPx = it
                         }
                     }
@@ -273,8 +286,18 @@ fun OneUICollapsingScaffold(
                             (activeOffset + delta).coerceAtMost(0f)
                         }
                         rawOverscrollPx = nextRaw
-                        val damped = iosRubberBand(nextRaw, rubberDimensionPx)
-                        scope.launch { rubberBandAnim.snapTo(damped) }
+                        if (abs(nextRaw) <= 0.5f) {
+                            rawOverscrollPx = 0f
+                            isRubberDragging = false
+                            dragRubberPx = 0f
+                            wasDraggedIntoRubber = false
+                            if (abs(rubberBandAnim.value) > 0.01f) {
+                                scope.launch { rubberBandAnim.snapTo(0f) }
+                            }
+                        } else {
+                            isRubberDragging = true
+                            dragRubberPx = iosRubberBand(nextRaw, rubberDimensionPx)
+                        }
                         return Offset(0f, nextRaw - activeOffset)
                     }
                 }
@@ -300,9 +323,13 @@ fun OneUICollapsingScaffold(
                     val used = -(collapseOffsetPx - prev)
                     val remaining = delta - used
                     if (source == NestedScrollSource.Drag && remaining > 0.5f && collapseOffsetPx <= 0.5f) {
+                        if (abs(rawOverscrollPx) < 0.5f && abs(rubberBandAnim.value) > 0.5f) {
+                            rawOverscrollPx = inverseIosRubberBand(rubberBandAnim.value, rubberDimensionPx)
+                        }
                         rawOverscrollPx = (rawOverscrollPx + remaining).coerceIn(-rubberDimensionPx * 4f, rubberDimensionPx * 4f)
-                        val damped = iosRubberBand(rawOverscrollPx, rubberDimensionPx)
-                        scope.launch { rubberBandAnim.snapTo(damped) }
+                        isRubberDragging = true
+                        wasDraggedIntoRubber = true
+                        dragRubberPx = iosRubberBand(rawOverscrollPx, rubberDimensionPx)
                         return Offset(0f, delta)
                     }
                     return Offset(0f, used)
@@ -312,9 +339,13 @@ fun OneUICollapsingScaffold(
                     val atTopPullDown = delta > 0f && collapseOffsetPx <= 0.5f
                     val atBottomPullUp = delta < 0f && collapseOffsetPx >= maxExpandPx - 0.5f
                     if (atTopPullDown || atBottomPullUp) {
+                        if (abs(rawOverscrollPx) < 0.5f && abs(rubberBandAnim.value) > 0.5f) {
+                            rawOverscrollPx = inverseIosRubberBand(rubberBandAnim.value, rubberDimensionPx)
+                        }
                         rawOverscrollPx = (rawOverscrollPx + delta).coerceIn(-rubberDimensionPx * 4f, rubberDimensionPx * 4f)
-                        val damped = iosRubberBand(rawOverscrollPx, rubberDimensionPx)
-                        scope.launch { rubberBandAnim.snapTo(damped) }
+                        isRubberDragging = true
+                        wasDraggedIntoRubber = true
+                        dragRubberPx = iosRubberBand(rawOverscrollPx, rubberDimensionPx)
                         return Offset(0f, delta)
                     }
                 }
@@ -322,21 +353,24 @@ fun OneUICollapsingScaffold(
             }
 
             override suspend fun onPreFling(available: Velocity): Velocity {
-                rawOverscrollPx = 0f
-                if (abs(available.y) <= 220f && abs(rubberBandAnim.value) > 0.5f) {
-                    releaseRubberBand()
+                if (wasDraggedIntoRubber || isRubberDragging) {
+                    wasDraggedIntoRubber = false
+                    releaseRubberBand(initialVelocity = 0f)
+                    return available
                 }
                 return Velocity.Zero
             }
 
             override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
+                val dragged = wasDraggedIntoRubber
+                wasDraggedIntoRubber = false
                 rawOverscrollPx = 0f
                 val excessVy = available.y
-                if (abs(excessVy) > 220f) {
+                if (!dragged && abs(excessVy) > 260f) {
                     if (excessVy > 0f && collapseOffsetPx > 0f) {
                         collapseOffsetPx = 0f
                     }
-                    releaseRubberBand(initialVelocity = excessVy * 0.14f)
+                    releaseRubberBand(initialVelocity = excessVy * 0.12f)
                 } else {
                     releaseRubberBand()
                 }
@@ -387,10 +421,13 @@ fun OneUICollapsingScaffold(
                                         collapseOffsetPx = (collapseOffsetPx - delta.y).coerceIn(0f, maxExpandPx)
                                         val unused = delta.y + (collapseOffsetPx - prev)
                                         if (abs(unused) > 0.2f) {
+                                            if (abs(rawOverscrollPx) < 0.5f && abs(rubberBandAnim.value) > 0.5f) {
+                                                rawOverscrollPx = inverseIosRubberBand(rubberBandAnim.value, rubberDimensionPx)
+                                            }
                                             rawOverscrollPx = (rawOverscrollPx + unused)
                                                 .coerceIn(-rubberDimensionPx * 4f, rubberDimensionPx * 4f)
-                                            val damped = iosRubberBand(rawOverscrollPx, rubberDimensionPx)
-                                            scope.launch { rubberBandAnim.snapTo(damped) }
+                                            isRubberDragging = true
+                                            dragRubberPx = iosRubberBand(rawOverscrollPx, rubberDimensionPx)
                                         }
                                     }
                                 } else {
@@ -401,7 +438,7 @@ fun OneUICollapsingScaffold(
                             }
                         } while (event.changes.any { it.pressed })
                     } finally {
-                        if (engaged || abs(rawOverscrollPx) > 0.5f) {
+                        if (engaged) {
                             releaseRubberBand()
                         }
                     }
@@ -426,7 +463,7 @@ fun OneUICollapsingScaffold(
                         modifier = Modifier
                             .alpha(expandedAlpha)
                             .graphicsLayer {
-                                val rb = rubberBandAnim.value
+                                val rb = if (isRubberDragging) dragRubberPx else rubberBandAnim.value
                                 val extraScale = (rb / rubberDimensionPx).coerceIn(0f, 0.08f) * 0.55f
                                 scaleX = titleScale + extraScale
                                 scaleY = titleScale + extraScale
@@ -497,21 +534,32 @@ fun OneUICollapsingScaffold(
                 )
             }
 
-            if (headerExtra != null) {
-                headerExtra()
-            }
-
-            // Content area with GPU iOS Rubber-banding (replaces default overscroll glow/stretch)
+            // Search bar (headerExtra) + Content area move together with GPU iOS Rubber-banding (clipped below Action Bar)
             Box(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .graphicsLayer {
-                        translationY = rubberBandAnim.value
-                    }
+                    .clipToBounds()
             ) {
-                CompositionLocalProvider(LocalOverscrollConfiguration provides null) {
-                    content()
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            translationY = if (isRubberDragging) dragRubberPx else rubberBandAnim.value
+                        }
+                ) {
+                    if (headerExtra != null) {
+                        headerExtra()
+                    }
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                    ) {
+                        CompositionLocalProvider(LocalOverscrollConfiguration provides null) {
+                            content()
+                        }
+                    }
                 }
             }
         }
