@@ -2,7 +2,6 @@ package com.oneui.gallery.ui.theme
 
 import android.app.Activity
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.BorderStroke
@@ -51,6 +50,7 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
@@ -181,14 +181,29 @@ fun OneUITheme(
     }
 }
 
-private fun applyRubberBand(rawOffset: Float, maxStretch: Float): Float {
-    val a = abs(rawOffset)
-    if (a < 0.01f) return 0f
-    return sign(rawOffset) * (maxStretch * a / (a + maxStretch * 2.1f))
+/**
+ * Apple UIScrollView rubber-band curve:
+ * result = (1 - (1 / ((x * c / d) + 1))) * d
+ */
+private fun iosRubberBand(offset: Float, dimension: Float, coeff: Float = 0.55f): Float {
+    val x = abs(offset)
+    if (x < 0.01f || dimension <= 1f) return 0f
+    val result = (1f - (1f / ((x * coeff / dimension) + 1f))) * dimension
+    return sign(offset) * result
 }
 
 /**
- * Samsung One UI 7 / 8 Ergonomic Collapsing Header Scaffold with silky GPU Rubber-banding.
+ * Inverse of iosRubberBand so reversing drag direction shrinks smoothly 1:1 from stretched state.
+ */
+private fun inverseIosRubberBand(rubberOffset: Float, dimension: Float, coeff: Float = 0.55f): Float {
+    val y = abs(rubberOffset).coerceAtMost(dimension * 0.96f)
+    if (y < 0.01f || dimension <= 1f) return 0f
+    val raw = dimension * y / (coeff * (dimension - y))
+    return sign(rubberOffset) * raw
+}
+
+/**
+ * Samsung One UI 7 / 8 Ergonomic Collapsing Header Scaffold with iOS-style GPU Rubber-banding & inertial bounce.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -203,24 +218,30 @@ fun OneUICollapsingScaffold(
 ) {
     val colors = LocalOneUIColors.current
     val density = LocalDensity.current
+    val configuration = LocalConfiguration.current
     val scope = rememberCoroutineScope()
     val maxExpandPx = with(density) { 158.dp.toPx() }
-    val maxRubberPx = with(density) { 78.dp.toPx() }
+    val rubberDimensionPx = with(density) {
+        (configuration.screenHeightDp * 0.52f).dp.toPx().coerceAtLeast(360f)
+    }
 
     var collapseOffsetPx by remember { mutableFloatStateOf(0f) }
     var rawOverscrollPx by remember { mutableFloatStateOf(0f) }
     val rubberBandAnim = remember { Animatable(0f) }
 
-    fun releaseRubberBand() {
+    fun releaseRubberBand(initialVelocity: Float = 0f) {
         rawOverscrollPx = 0f
-        if (abs(rubberBandAnim.value) > 0.5f) {
+        if (abs(rubberBandAnim.value) > 0.5f || abs(initialVelocity) > 220f) {
             scope.launch {
+                val spec = if (abs(initialVelocity) > 220f) {
+                    spring<Float>(dampingRatio = 0.88f, stiffness = 210f)
+                } else {
+                    spring<Float>(dampingRatio = 0.92f, stiffness = 240f)
+                }
                 rubberBandAnim.animateTo(
                     targetValue = 0f,
-                    animationSpec = spring(
-                        dampingRatio = 0.74f,
-                        stiffness = 340f
-                    )
+                    initialVelocity = initialVelocity.coerceIn(-1900f, 1900f),
+                    animationSpec = spec
                 )
             }
         }
@@ -232,23 +253,29 @@ fun OneUICollapsingScaffold(
         rubberBandAnim.snapTo(0f)
     }
 
-    val nestedScrollConnection = remember(maxExpandPx, maxRubberPx) {
+    val nestedScrollConnection = remember(maxExpandPx, rubberDimensionPx) {
         object : NestedScrollConnection {
             override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
                 val delta = available.y
-                // 1. Se estava esticado no rubber-band e o usuário inverteu o sentido, recolhe 1:1
-                if (source == NestedScrollSource.Drag && abs(rawOverscrollPx) > 0.5f) {
-                    if ((rawOverscrollPx > 0f && delta < 0f) || (rawOverscrollPx < 0f && delta > 0f)) {
-                        val prevRaw = rawOverscrollPx
-                        val nextRaw = if (prevRaw > 0f) {
-                            (prevRaw + delta).coerceAtLeast(0f)
+                // 1. Se estava esticado (ou voltando do bounce) e o dedo reverteu o sentido, recolhe suavemente
+                if (source == NestedScrollSource.Drag && (abs(rawOverscrollPx) > 0.5f || abs(rubberBandAnim.value) > 0.5f)) {
+                    val activeOffset = if (abs(rawOverscrollPx) > 0.5f) {
+                        rawOverscrollPx
+                    } else {
+                        inverseIosRubberBand(rubberBandAnim.value, rubberDimensionPx).also {
+                            rawOverscrollPx = it
+                        }
+                    }
+                    if ((activeOffset > 0f && delta < 0f) || (activeOffset < 0f && delta > 0f)) {
+                        val nextRaw = if (activeOffset > 0f) {
+                            (activeOffset + delta).coerceAtLeast(0f)
                         } else {
-                            (prevRaw + delta).coerceAtMost(0f)
+                            (activeOffset + delta).coerceAtMost(0f)
                         }
                         rawOverscrollPx = nextRaw
-                        val damped = applyRubberBand(nextRaw, maxRubberPx)
+                        val damped = iosRubberBand(nextRaw, rubberDimensionPx)
                         scope.launch { rubberBandAnim.snapTo(damped) }
-                        return Offset(0f, nextRaw - prevRaw)
+                        return Offset(0f, nextRaw - activeOffset)
                     }
                 }
                 // 2. Recolhe o cabeçalho One UI antes de rolar a lista para baixo
@@ -273,20 +300,20 @@ fun OneUICollapsingScaffold(
                     val used = -(collapseOffsetPx - prev)
                     val remaining = delta - used
                     if (source == NestedScrollSource.Drag && remaining > 0.5f && collapseOffsetPx <= 0.5f) {
-                        rawOverscrollPx += remaining
-                        val damped = applyRubberBand(rawOverscrollPx, maxRubberPx)
+                        rawOverscrollPx = (rawOverscrollPx + remaining).coerceIn(-rubberDimensionPx * 4f, rubberDimensionPx * 4f)
+                        val damped = iosRubberBand(rawOverscrollPx, rubberDimensionPx)
                         scope.launch { rubberBandAnim.snapTo(damped) }
                         return Offset(0f, delta)
                     }
                     return Offset(0f, used)
                 }
-                // 2. Rubber-banding suave ao puxar além do topo ou da base
+                // 2. Rubber-banding estilo iOS ao puxar além do topo ou da base
                 if (source == NestedScrollSource.Drag && abs(delta) > 0.2f) {
                     val atTopPullDown = delta > 0f && collapseOffsetPx <= 0.5f
                     val atBottomPullUp = delta < 0f && collapseOffsetPx >= maxExpandPx - 0.5f
                     if (atTopPullDown || atBottomPullUp) {
-                        rawOverscrollPx = (rawOverscrollPx + delta).coerceIn(-maxRubberPx * 6f, maxRubberPx * 6f)
-                        val damped = applyRubberBand(rawOverscrollPx, maxRubberPx)
+                        rawOverscrollPx = (rawOverscrollPx + delta).coerceIn(-rubberDimensionPx * 4f, rubberDimensionPx * 4f)
+                        val damped = iosRubberBand(rawOverscrollPx, rubberDimensionPx)
                         scope.launch { rubberBandAnim.snapTo(damped) }
                         return Offset(0f, delta)
                     }
@@ -295,12 +322,24 @@ fun OneUICollapsingScaffold(
             }
 
             override suspend fun onPreFling(available: Velocity): Velocity {
-                releaseRubberBand()
+                rawOverscrollPx = 0f
+                if (abs(available.y) <= 220f && abs(rubberBandAnim.value) > 0.5f) {
+                    releaseRubberBand()
+                }
                 return Velocity.Zero
             }
 
             override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
-                releaseRubberBand()
+                rawOverscrollPx = 0f
+                val excessVy = available.y
+                if (abs(excessVy) > 220f) {
+                    if (excessVy > 0f && collapseOffsetPx > 0f) {
+                        collapseOffsetPx = 0f
+                    }
+                    releaseRubberBand(initialVelocity = excessVy * 0.14f)
+                } else {
+                    releaseRubberBand()
+                }
                 return Velocity.Zero
             }
         }
@@ -309,8 +348,8 @@ fun OneUICollapsingScaffold(
     val collapseFraction by animateFloatAsState(
         targetValue = (collapseOffsetPx / maxExpandPx).coerceIn(0f, 1f),
         animationSpec = spring(
-            dampingRatio = Spring.DampingRatioNoBouncy,
-            stiffness = Spring.StiffnessMediumLow
+            dampingRatio = 0.92f,
+            stiffness = 260f
         ),
         label = "oneui_collapse"
     )
@@ -324,7 +363,7 @@ fun OneUICollapsingScaffold(
             .background(colors.background)
             .statusBarsPadding()
             .nestedScroll(nestedScrollConnection)
-            .pointerInput(maxExpandPx, maxRubberPx) {
+            .pointerInput(maxExpandPx, rubberDimensionPx) {
                 awaitEachGesture {
                     awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Final)
                     var totalDx = 0f
@@ -349,8 +388,8 @@ fun OneUICollapsingScaffold(
                                         val unused = delta.y + (collapseOffsetPx - prev)
                                         if (abs(unused) > 0.2f) {
                                             rawOverscrollPx = (rawOverscrollPx + unused)
-                                                .coerceIn(-maxRubberPx * 6f, maxRubberPx * 6f)
-                                            val damped = applyRubberBand(rawOverscrollPx, maxRubberPx)
+                                                .coerceIn(-rubberDimensionPx * 4f, rubberDimensionPx * 4f)
+                                            val damped = iosRubberBand(rawOverscrollPx, rubberDimensionPx)
                                             scope.launch { rubberBandAnim.snapTo(damped) }
                                         }
                                     }
@@ -362,7 +401,9 @@ fun OneUICollapsingScaffold(
                             }
                         } while (event.changes.any { it.pressed })
                     } finally {
-                        releaseRubberBand()
+                        if (engaged || abs(rawOverscrollPx) > 0.5f) {
+                            releaseRubberBand()
+                        }
                     }
                 }
             }
@@ -386,10 +427,10 @@ fun OneUICollapsingScaffold(
                             .alpha(expandedAlpha)
                             .graphicsLayer {
                                 val rb = rubberBandAnim.value
-                                val extraScale = if (rb > 0f) (rb / maxRubberPx) * 0.04f else 0f
+                                val extraScale = (rb / rubberDimensionPx).coerceIn(0f, 0.08f) * 0.55f
                                 scaleX = titleScale + extraScale
                                 scaleY = titleScale + extraScale
-                                translationY = if (rb > 0f) rb * 0.38f else 0f
+                                translationY = if (rb > 0f) rb * 0.42f else 0f
                             }
                     ) {
                         Text(
@@ -460,7 +501,7 @@ fun OneUICollapsingScaffold(
                 headerExtra()
             }
 
-            // Content area with GPU Rubber-banding (replaces default overscroll glow/stretch)
+            // Content area with GPU iOS Rubber-banding (replaces default overscroll glow/stretch)
             Box(
                 modifier = Modifier
                     .weight(1f)

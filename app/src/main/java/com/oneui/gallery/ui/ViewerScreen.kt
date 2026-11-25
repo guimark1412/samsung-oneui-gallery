@@ -206,12 +206,12 @@ fun ViewerScreen(
 
     val previewPaddingH by animateDpAsState(
         targetValue = if (isInfoExpanded) 20.dp else 0.dp,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMediumLow),
+        animationSpec = spring(dampingRatio = 0.90f, stiffness = 280f),
         label = "viewer_pad_h"
     )
     val previewCorner by animateDpAsState(
         targetValue = if (isInfoExpanded) 24.dp else 0.dp,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMediumLow),
+        animationSpec = spring(dampingRatio = 0.90f, stiffness = 280f),
         label = "viewer_corner"
     )
 
@@ -220,8 +220,8 @@ fun ViewerScreen(
         infoAnim.animateTo(
             targetValue = if (isInfoExpanded) 1f else 0f,
             animationSpec = spring(
-                dampingRatio = Spring.DampingRatioNoBouncy,
-                stiffness = Spring.StiffnessMediumLow
+                dampingRatio = 0.90f,
+                stiffness = 280f
             )
         )
     }
@@ -240,8 +240,8 @@ fun ViewerScreen(
             openAnim.animateTo(
                 targetValue = 1f,
                 animationSpec = spring(
-                    dampingRatio = 0.88f,
-                    stiffness = 440f
+                    dampingRatio = 0.90f,
+                    stiffness = 310f
                 )
             )
             isOpening = false
@@ -316,8 +316,8 @@ fun ViewerScreen(
             dismissAnim.animateTo(
                 targetValue = 1f,
                 animationSpec = spring(
-                    dampingRatio = 0.88f,
-                    stiffness = 430f
+                    dampingRatio = 0.90f,
+                    stiffness = 310f
                 )
             )
             onBack()
@@ -452,22 +452,35 @@ fun ViewerScreen(
                                 }
                             )
                         }
-                        // Multi-touch pinch + rubber-banded zoom/pan + vertical swipe-up (Info) & drag-down (Dismiss)
+                        // Multi-touch pinch + iOS rubber-banded zoom/pan + vertical swipe-up (Info) & drag-down (Dismiss)
                         // PointerEventPass.Initial guarantees HorizontalPager never steals 2-finger pinch!
                         .pointerInput(media.id, totalWidthPx, totalHeightPx) {
-                            fun softBound(value: Float, maxLimit: Float, overshoot: Float): Float {
+                            fun iosSoftBound(value: Float, maxLimit: Float, dimension: Float): Float {
                                 val a = abs(value)
                                 if (a <= maxLimit) return value
                                 val excess = a - maxLimit
-                                val damped = maxLimit + (overshoot * excess / (excess + overshoot * 1.8f))
-                                return sign(value) * damped
+                                val dim = dimension.coerceAtLeast(120f)
+                                val result = (1f - (1f / ((excess * 0.55f / dim) + 1f))) * dim
+                                return sign(value) * (maxLimit + result)
+                            }
+
+                            fun invertIosSoftBound(boundedValue: Float, maxLimit: Float, dimension: Float): Float {
+                                val a = abs(boundedValue)
+                                if (a <= maxLimit) return boundedValue
+                                val dim = dimension.coerceAtLeast(120f)
+                                val y = (a - maxLimit).coerceAtMost(dim * 0.94f)
+                                val excess = dim * y / (0.55f * (dim - y))
+                                return sign(boundedValue) * (maxLimit + excess)
                             }
 
                             awaitEachGesture {
                                 awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
                                 var curScale = scaleAnim.value
+                                var rawScale = curScale
                                 var curX = offsetXAnim.value
                                 var curY = offsetYAnim.value
+                                var rawPanX = curX
+                                var rawPanY = curY
                                 var totalDx = 0f
                                 var totalDy = 0f
                                 var zoomedPanDx = 0f
@@ -495,30 +508,41 @@ fun ViewerScreen(
                                             val panChange = event.calculatePan()
                                             val centroid = event.calculateCentroid(useCurrent = true)
                                             if (!zoomChange.isNaN() && zoomChange > 0f) {
-                                                val dampedZoom = if (curScale in 1f..4f) {
-                                                    zoomChange
-                                                } else {
-                                                    1f + (zoomChange - 1f) * 0.35f
+                                                rawScale = (rawScale * zoomChange).coerceIn(0.45f, 6.2f)
+                                                val newScale = when {
+                                                    rawScale < 1f -> {
+                                                        val ex = 1f - rawScale
+                                                        val d = 0.34f
+                                                        1f - (1f - (1f / ((ex * 0.55f / d) + 1f))) * d
+                                                    }
+                                                    rawScale > 4f -> {
+                                                        val ex = rawScale - 4f
+                                                        val d = 1.25f
+                                                        4f + (1f - (1f / ((ex * 0.55f / d) + 1f))) * d
+                                                    }
+                                                    else -> rawScale
                                                 }
-                                                val newScale = (curScale * dampedZoom).coerceIn(0.76f, 4.8f)
                                                 val ratio = if (curScale > 0.001f) newScale / curScale else 1f
-                                                val rawX: Float
-                                                val rawY: Float
+                                                val candX: Float
+                                                val candY: Float
                                                 if (centroid != Offset.Unspecified) {
                                                     val cRelX = centroid.x - size.width / 2f
                                                     val cRelY = centroid.y - size.height / 2f
-                                                    rawX = cRelX - (cRelX - curX) * ratio + panChange.x
-                                                    rawY = cRelY - (cRelY - curY) * ratio + panChange.y
+                                                    candX = cRelX - (cRelX - curX) * ratio + panChange.x
+                                                    candY = cRelY - (cRelY - curY) * ratio + panChange.y
                                                 } else {
-                                                    rawX = curX + panChange.x
-                                                    rawY = curY + panChange.y
+                                                    candX = curX + panChange.x
+                                                    candY = curY + panChange.y
                                                 }
                                                 val maxX = if (newScale > 1f) (size.width * (newScale - 1f)) / 2f else 0f
                                                 val maxY = if (newScale > 1f) (size.height * (newScale - 1f)) / 2f else 0f
-                                                val overshoot = if (newScale > 1f) 96f else 52f
+                                                val dimX = if (newScale > 1f) size.width * 0.30f else size.width * 0.16f
+                                                val dimY = if (newScale > 1f) size.height * 0.28f else size.height * 0.16f
                                                 curScale = newScale
-                                                curX = softBound(rawX, maxX, overshoot)
-                                                curY = softBound(rawY, maxY, overshoot)
+                                                curX = iosSoftBound(candX, maxX, dimX)
+                                                curY = iosSoftBound(candY, maxY, dimY)
+                                                rawPanX = invertIosSoftBound(curX, maxX, dimX)
+                                                rawPanY = invertIosSoftBound(curY, maxY, dimY)
                                                 if (page == pagerState.currentPage) {
                                                     activeZoomScale = curScale
                                                 }
@@ -535,15 +559,21 @@ fun ViewerScreen(
                                                 zoomedPanDx += panChange.x
                                                 zoomedPanDy += panChange.y
                                                 if (!zoomedPanEngaged && (abs(zoomedPanDx) > 8f || abs(zoomedPanDy) > 8f)) {
+                                                    val maxX = (size.width * (curScale - 1f)) / 2f
+                                                    val maxY = (size.height * (curScale - 1f)) / 2f
+                                                    rawPanX = invertIosSoftBound(curX, maxX, size.width * 0.30f)
+                                                    rawPanY = invertIosSoftBound(curY, maxY, size.height * 0.28f)
                                                     zoomedPanEngaged = true
                                                 }
                                                 if (zoomedPanEngaged && panChange != Offset.Zero) {
                                                     val maxX = (size.width * (curScale - 1f)) / 2f
                                                     val maxY = (size.height * (curScale - 1f)) / 2f
-                                                    val stepX = if (abs(curX) > maxX && sign(panChange.x) == sign(curX)) panChange.x * 0.35f else panChange.x
-                                                    val stepY = if (abs(curY) > maxY && sign(panChange.y) == sign(curY)) panChange.y * 0.35f else panChange.y
-                                                    curX = (curX + stepX).coerceIn(-maxX - 96f, maxX + 96f)
-                                                    curY = (curY + stepY).coerceIn(-maxY - 96f, maxY + 96f)
+                                                    val dimX = size.width * 0.30f
+                                                    val dimY = size.height * 0.28f
+                                                    rawPanX = (rawPanX + panChange.x).coerceIn(-maxX - dimX * 3f, maxX + dimX * 3f)
+                                                    rawPanY = (rawPanY + panChange.y).coerceIn(-maxY - dimY * 3f, maxY + dimY * 3f)
+                                                    curX = iosSoftBound(rawPanX, maxX, dimX)
+                                                    curY = iosSoftBound(rawPanY, maxY, dimY)
                                                     scope.launch {
                                                         offsetXAnim.snapTo(curX)
                                                         offsetYAnim.snapTo(curY)
@@ -600,8 +630,8 @@ fun ViewerScreen(
                                         if (finalScale != curScale || finalX != curX || finalY != curY) {
                                             scope.launch {
                                                 val bounceSpring = spring<Float>(
-                                                    dampingRatio = 0.78f,
-                                                    stiffness = Spring.StiffnessMediumLow
+                                                    dampingRatio = 0.90f,
+                                                    stiffness = 250f
                                                 )
                                                 launch { scaleAnim.animateTo(finalScale, bounceSpring) }
                                                 launch { offsetXAnim.animateTo(finalX, bounceSpring) }
@@ -625,8 +655,8 @@ fun ViewerScreen(
                                                     initialValue = 1f,
                                                     targetValue = 0f,
                                                     animationSpec = spring(
-                                                        dampingRatio = 0.82f,
-                                                        stiffness = Spring.StiffnessMedium
+                                                        dampingRatio = 0.90f,
+                                                        stiffness = 270f
                                                     )
                                                 ) { v, _ ->
                                                     dragOffsetX = startX * v
@@ -697,8 +727,10 @@ fun ViewerScreen(
             // Fullscreen Top Bar (hidden when split-screen Info Sheet is expanded or during drag-dismiss)
             androidx.compose.animation.AnimatedVisibility(
                 visible = showControls && !isInfoExpanded && !isDraggingToDismiss && !isDismissing && !isOpening,
-                enter = fadeIn() + slideInVertically { -it },
-                exit = fadeOut() + slideOutVertically { -it },
+                enter = fadeIn(androidx.compose.animation.core.tween(240, easing = androidx.compose.animation.core.FastOutSlowInEasing)) +
+                    slideInVertically(androidx.compose.animation.core.tween(240, easing = androidx.compose.animation.core.FastOutSlowInEasing)) { -it },
+                exit = fadeOut(androidx.compose.animation.core.tween(200, easing = androidx.compose.animation.core.FastOutSlowInEasing)) +
+                    slideOutVertically(androidx.compose.animation.core.tween(200, easing = androidx.compose.animation.core.FastOutSlowInEasing)) { -it },
                 modifier = Modifier.align(Alignment.TopCenter)
             ) {
                 Row(
@@ -756,8 +788,10 @@ fun ViewerScreen(
             // Fullscreen Bottom Controls: Filmstrip + Minimalist Icons
             androidx.compose.animation.AnimatedVisibility(
                 visible = showControls && !isInfoExpanded && !isDraggingToDismiss && !isDismissing && !isOpening,
-                enter = fadeIn() + slideInVertically { it },
-                exit = fadeOut() + slideOutVertically { it },
+                enter = fadeIn(androidx.compose.animation.core.tween(240, easing = androidx.compose.animation.core.FastOutSlowInEasing)) +
+                    slideInVertically(androidx.compose.animation.core.tween(240, easing = androidx.compose.animation.core.FastOutSlowInEasing)) { it },
+                exit = fadeOut(androidx.compose.animation.core.tween(200, easing = androidx.compose.animation.core.FastOutSlowInEasing)) +
+                    slideOutVertically(androidx.compose.animation.core.tween(200, easing = androidx.compose.animation.core.FastOutSlowInEasing)) { it },
                 modifier = Modifier.align(Alignment.BottomCenter)
             ) {
                 Column(

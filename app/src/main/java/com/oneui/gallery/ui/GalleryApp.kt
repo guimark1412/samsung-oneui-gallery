@@ -24,6 +24,10 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -149,6 +153,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.toSize
@@ -179,6 +184,7 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import kotlin.math.roundToInt
 
 private enum class GalleryTab(val label: String) {
     PICTURES("Fotos"),
@@ -447,48 +453,48 @@ fun GalleryApp() {
             return@OneUITheme
         }
 
-        val currentEditing = editingItem
-        if (currentEditing != null) {
-            EditorScreen(
-                item = currentEditing,
-                onBack = { editingItem = null },
-                onSaved = {
-                    editingItem = null
-                    viewerRequest = null
-                    refreshMedia()
-                }
-            )
-            return@OneUITheme
-        }
-
-        val currentCollage = editingCollageItems
-        if (currentCollage != null) {
-            CollageScreen(
-                items = currentCollage,
-                onBack = { editingCollageItems = null },
-                onSaved = {
-                    editingCollageItems = null
-                    selectionMode = false
-                    selectedIds.clear()
-                    refreshMedia()
-                }
-            )
-            return@OneUITheme
-        }
-
-        val currentStory = activeStory
-        if (currentStory != null) {
-            StoryPlayerOverlay(
-                story = currentStory,
-                onClose = { activeStory = null }
-            )
-            return@OneUITheme
-        }
+        var lastEditingItem by remember { mutableStateOf<MediaItem?>(null) }
+        if (editingItem != null) lastEditingItem = editingItem
+        var lastCollageItems by remember { mutableStateOf<List<MediaItem>?>(null) }
+        if (editingCollageItems != null) lastCollageItems = editingCollageItems
+        var lastStory by remember { mutableStateOf<StoryItem?>(null) }
+        if (activeStory != null) lastStory = activeStory
 
         val currentViewer = viewerRequest
 
         Box(modifier = Modifier.fillMaxSize()) {
-            val route = collectionRoute
+            AnimatedContent(
+                targetState = collectionRoute,
+                contentKey = { r ->
+                    when (r) {
+                        null -> "main"
+                        is CollectionRoute.Album -> "album_${r.album.id}"
+                        else -> r::class.simpleName ?: "route"
+                    }
+                },
+                transitionSpec = {
+                    val slideSpec = spring<IntOffset>(
+                        dampingRatio = 0.90f,
+                        stiffness = 320f
+                    )
+                    if (targetState != null && initialState == null) {
+                        (slideInHorizontally(slideSpec) { (it * 0.24f).roundToInt() } +
+                            fadeIn(tween(240, easing = FastOutSlowInEasing)) +
+                            scaleIn(initialScale = 0.985f, animationSpec = tween(240, easing = FastOutSlowInEasing))) togetherWith
+                            (slideOutHorizontally(slideSpec) { -(it * 0.08f).roundToInt() } +
+                                fadeOut(tween(200, easing = FastOutSlowInEasing)))
+                    } else if (targetState == null && initialState != null) {
+                        (slideInHorizontally(slideSpec) { -(it * 0.08f).roundToInt() } +
+                            fadeIn(tween(240, easing = FastOutSlowInEasing))) togetherWith
+                            (slideOutHorizontally(slideSpec) { (it * 0.24f).roundToInt() } +
+                                fadeOut(tween(200, easing = FastOutSlowInEasing)))
+                    } else {
+                        fadeIn(tween(220, easing = FastOutSlowInEasing)) togetherWith
+                            fadeOut(tween(180, easing = FastOutSlowInEasing))
+                    }
+                },
+                label = "collection_route_transition"
+            ) { route ->
             if (route != null) {
                 val isPrivateRoute = route is CollectionRoute.Private
                 val (routeTitle, routeItems, isTrashRoute) = when (route) {
@@ -959,58 +965,76 @@ fun GalleryApp() {
                 }
             },
             bottomBar = {
-                if (selectionMode) {
-                    val selectedMainItems = displayedPictures.filter { selectedIds.contains(it.id) }
-                    val selectedPhotos = selectedMainItems.filter { !it.isVideo }
-                    SelectionBottomBar(
-                        selectedCount = selectedMainItems.size,
-                        canCollage = selectedPhotos.size in 2..6,
-                        isPrivateRoute = false,
-                        onShare = { shareItems(selectedMainItems) },
-                        onMoveToAlbum = { albumActionMode = "move" },
-                        onFavorite = {
-                            MediaRepository.setFavorites(context, selectedMainItems.map { it.id }, true)
-                            selectionMode = false
-                            selectedIds.clear()
-                            refreshMedia()
-                            Toast.makeText(context, "Adicionado aos Favoritos", Toast.LENGTH_SHORT).show()
-                        },
-                        onCollage = {
-                            editingCollageItems = selectedPhotos
-                        },
-                        onPrivate = {
-                            MediaRepository.moveToPrivate(context, selectedMainItems.map { it.id })
-                            selectionMode = false
-                            selectedIds.clear()
-                            refreshMedia()
-                            Toast.makeText(context, "Movido para o Álbum Privado", Toast.LENGTH_SHORT).show()
-                        },
-                        onDelete = {
-                            pendingTrashItems = selectedMainItems
-                        }
-                    )
-                } else {
-                    OneUIFloatingCapsuleBottomBar(
-                        currentTab = currentTab,
-                        isSearchOpen = showSearch,
-                        onSelectTab = { tab ->
-                            currentTab = tab
-                            if (tab != GalleryTab.PICTURES) showSearch = false
-                        },
-                        onToggleSearch = {
-                            currentTab = GalleryTab.PICTURES
-                            showSearch = !showSearch
-                            if (!showSearch) searchQuery = ""
-                        }
-                    )
+                AnimatedContent(
+                    targetState = selectionMode,
+                    transitionSpec = {
+                        (slideInVertically(spring(dampingRatio = 0.88f, stiffness = 360f)) { it / 2 } +
+                            fadeIn(tween(200, easing = FastOutSlowInEasing))) togetherWith
+                            (slideOutVertically(tween(160, easing = FastOutSlowInEasing)) { it / 2 } +
+                                fadeOut(tween(150, easing = FastOutSlowInEasing)))
+                    },
+                    label = "main_bottom_bar_transition"
+                ) { inSelection ->
+                    if (inSelection) {
+                        val selectedMainItems = displayedPictures.filter { selectedIds.contains(it.id) }
+                        val selectedPhotos = selectedMainItems.filter { !it.isVideo }
+                        SelectionBottomBar(
+                            selectedCount = selectedMainItems.size,
+                            canCollage = selectedPhotos.size in 2..6,
+                            isPrivateRoute = false,
+                            onShare = { shareItems(selectedMainItems) },
+                            onMoveToAlbum = { albumActionMode = "move" },
+                            onFavorite = {
+                                MediaRepository.setFavorites(context, selectedMainItems.map { it.id }, true)
+                                selectionMode = false
+                                selectedIds.clear()
+                                refreshMedia()
+                                Toast.makeText(context, "Adicionado aos Favoritos", Toast.LENGTH_SHORT).show()
+                            },
+                            onCollage = {
+                                editingCollageItems = selectedPhotos
+                            },
+                            onPrivate = {
+                                MediaRepository.moveToPrivate(context, selectedMainItems.map { it.id })
+                                selectionMode = false
+                                selectedIds.clear()
+                                refreshMedia()
+                                Toast.makeText(context, "Movido para o Álbum Privado", Toast.LENGTH_SHORT).show()
+                            },
+                            onDelete = {
+                                pendingTrashItems = selectedMainItems
+                            }
+                        )
+                    } else {
+                        OneUIFloatingCapsuleBottomBar(
+                            currentTab = currentTab,
+                            isSearchOpen = showSearch,
+                            onSelectTab = { tab ->
+                                currentTab = tab
+                                if (tab != GalleryTab.PICTURES) showSearch = false
+                            },
+                            onToggleSearch = {
+                                currentTab = GalleryTab.PICTURES
+                                showSearch = !showSearch
+                                if (!showSearch) searchQuery = ""
+                            }
+                        )
+                    }
                 }
             }
         ) {
             AnimatedContent(
                 targetState = currentTab,
                 transitionSpec = {
-                    fadeIn(tween(220, easing = FastOutSlowInEasing)) togetherWith
-                        fadeOut(tween(150))
+                    val forward = targetState.ordinal >= initialState.ordinal
+                    val slideSpec = spring<IntOffset>(dampingRatio = 0.90f, stiffness = 340f)
+                    val enterOffset: (Int) -> Int = { w -> if (forward) (w * 0.05f).roundToInt() else -(w * 0.05f).roundToInt() }
+                    val exitOffset: (Int) -> Int = { w -> if (forward) -(w * 0.05f).roundToInt() else (w * 0.05f).roundToInt() }
+                    (slideInHorizontally(slideSpec, enterOffset) +
+                        scaleIn(initialScale = 0.985f, animationSpec = tween(260, easing = FastOutSlowInEasing)) +
+                        fadeIn(tween(260, easing = FastOutSlowInEasing))) togetherWith
+                        (slideOutHorizontally(slideSpec, exitOffset) +
+                            fadeOut(tween(180, easing = FastOutSlowInEasing)))
                 },
                 label = "main_tab_transition"
             ) { activeTab ->
@@ -1188,6 +1212,7 @@ fun GalleryApp() {
                 }
             )
         }
+            }
             }
 
             val trashTargets = pendingTrashItems
@@ -1548,6 +1573,69 @@ fun GalleryApp() {
                                 refreshMedia()
                             }
                         }
+                    )
+                }
+            }
+
+            AnimatedVisibility(
+                visible = editingItem != null,
+                enter = fadeIn(tween(240, easing = FastOutSlowInEasing)) +
+                    slideInVertically(spring(dampingRatio = 0.90f, stiffness = 320f)) { it / 14 } +
+                    scaleIn(initialScale = 0.97f, animationSpec = tween(240, easing = FastOutSlowInEasing)),
+                exit = fadeOut(tween(180, easing = FastOutSlowInEasing)) +
+                    slideOutVertically(tween(200, easing = FastOutSlowInEasing)) { it / 18 } +
+                    scaleOut(targetScale = 0.97f, animationSpec = tween(200, easing = FastOutSlowInEasing))
+            ) {
+                val item = lastEditingItem
+                if (item != null) {
+                    EditorScreen(
+                        item = item,
+                        onBack = { editingItem = null },
+                        onSaved = {
+                            editingItem = null
+                            viewerRequest = null
+                            refreshMedia()
+                        }
+                    )
+                }
+            }
+
+            AnimatedVisibility(
+                visible = editingCollageItems != null,
+                enter = fadeIn(tween(240, easing = FastOutSlowInEasing)) +
+                    slideInVertically(spring(dampingRatio = 0.90f, stiffness = 320f)) { it / 14 } +
+                    scaleIn(initialScale = 0.97f, animationSpec = tween(240, easing = FastOutSlowInEasing)),
+                exit = fadeOut(tween(180, easing = FastOutSlowInEasing)) +
+                    slideOutVertically(tween(200, easing = FastOutSlowInEasing)) { it / 18 } +
+                    scaleOut(targetScale = 0.97f, animationSpec = tween(200, easing = FastOutSlowInEasing))
+            ) {
+                val collage = lastCollageItems
+                if (collage != null) {
+                    CollageScreen(
+                        items = collage,
+                        onBack = { editingCollageItems = null },
+                        onSaved = {
+                            editingCollageItems = null
+                            selectionMode = false
+                            selectedIds.clear()
+                            refreshMedia()
+                        }
+                    )
+                }
+            }
+
+            AnimatedVisibility(
+                visible = activeStory != null,
+                enter = fadeIn(tween(260, easing = FastOutSlowInEasing)) +
+                    scaleIn(initialScale = 0.96f, animationSpec = spring(dampingRatio = 0.90f, stiffness = 320f)),
+                exit = fadeOut(tween(200, easing = FastOutSlowInEasing)) +
+                    scaleOut(targetScale = 0.96f, animationSpec = tween(200, easing = FastOutSlowInEasing))
+            ) {
+                val story = lastStory
+                if (story != null) {
+                    StoryPlayerOverlay(
+                        story = story,
+                        onClose = { activeStory = null }
                     )
                 }
             }
