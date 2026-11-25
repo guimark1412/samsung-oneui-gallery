@@ -143,8 +143,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
+import androidx.compose.ui.platform.LocalHapticFeedback
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.math.exp
+import kotlin.math.hypot
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
@@ -162,6 +168,7 @@ import androidx.compose.ui.zIndex
 import androidx.compose.animation.core.animate
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.withFrameNanos
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.withContext
@@ -1673,6 +1680,56 @@ private fun OneUICircularGlassAction(
 
 private class SlotRectHolder(var rect: Rect? = null)
 
+/** Estado do arraste para selecionar várias fotos (seleção por "deslizar o dedo"). */
+private class DragSelectState {
+    var dragging by mutableStateOf(false)
+    var anchorIdx = -1
+    var lastIdx = -1
+    var lastX = 0f
+    var lastY = 0f
+    var edgeSpeed = 0f
+    val added = HashSet<Long>()
+}
+
+/**
+ * Efeito "cobra": as fotos selecionadas seguem o dedo em cadeia (cada segmento persegue o anterior).
+ * A cadeia é atualizada por frame e lida apenas na fase de desenho dos thumbnails.
+ */
+private class SnakeState {
+    companion object {
+        const val K = 14
+    }
+
+    var active by mutableStateOf(false)
+    var tick by mutableIntStateOf(0)
+    val progress = Animatable(0f)
+    val chainX = FloatArray(K)
+    val chainY = FloatArray(K)
+    var fingerX = 0f
+    var fingerY = 0f
+    val ranks = HashMap<Long, Int>()
+
+    fun reset(x: Float, y: Float) {
+        fingerX = x
+        fingerY = y
+        for (i in 0 until K) {
+            chainX[i] = x
+            chainY[i] = y
+        }
+    }
+
+    fun step(dtSec: Float) {
+        val a = 1f - exp(-dtSec * 17f)
+        chainX[0] += (fingerX - chainX[0]) * (1f - exp(-dtSec * 26f))
+        chainY[0] += (fingerY - chainY[0]) * (1f - exp(-dtSec * 26f))
+        for (i in 1 until K) {
+            chainX[i] += (chainX[i - 1] - chainX[i]) * a
+            chainY[i] += (chainY[i - 1] - chainY[i]) * a
+        }
+        tick++
+    }
+}
+
 private class GridFlipTracker {
     val currentBounds = HashMap<Long, Rect>()
     val visualBounds = HashMap<Long, Rect>()
@@ -1761,9 +1818,193 @@ private fun MediaGridContent(
     val currentScale by rememberUpdatedState(timelineScale)
     val currentOnScaleChange by rememberUpdatedState(onTimelineScaleChange)
 
+    // ---- Seleção por arraste + efeito cobra ----
+    val haptic = LocalHapticFeedback.current
+    val dragSel = remember { DragSelectState() }
+    val snake = remember { SnakeState() }
+    val currentItems by rememberUpdatedState(items)
+    val currentIndexById by rememberUpdatedState(indexById)
+    val currentOnToggle by rememberUpdatedState(onToggleSelect)
+    val currentOnEnter by rememberUpdatedState(onEnterSelection)
+    var boxRoot by remember { mutableStateOf(Offset.Zero) }
+
+    fun hitTestItem(x: Float, y: Float): Long? {
+        val xi = x.roundToInt()
+        val yi = y.roundToInt()
+        for (info in gridState.layoutInfo.visibleItemsInfo) {
+            val key = info.key as? Long ?: continue
+            val o = info.offset
+            val s = info.size
+            if (xi >= o.x && xi < o.x + s.width && yi >= o.y && yi < o.y + s.height) return key
+        }
+        return null
+    }
+
+    fun applyDragSelection(x: Float, y: Float) {
+        val id = hitTestItem(x, y) ?: return
+        val idx = currentIndexById[id] ?: return
+        if (idx == dragSel.lastIdx || dragSel.anchorIdx < 0) return
+        dragSel.lastIdx = idx
+        val lo = minOf(dragSel.anchorIdx, idx)
+        val hi = maxOf(dragSel.anchorIdx, idx)
+        val list = currentItems
+        val range = HashSet<Long>()
+        for (i in lo..hi) {
+            if (i in list.indices) range.add(list[i].id)
+        }
+        range.forEach { rid ->
+            if (!selectedIds.contains(rid)) {
+                currentOnToggle(rid)
+                dragSel.added.add(rid)
+            }
+        }
+        dragSel.added.toList().forEach { rid ->
+            if (rid !in range) {
+                if (selectedIds.contains(rid)) currentOnToggle(rid)
+                dragSel.added.remove(rid)
+            }
+        }
+    }
+
+    // Rolagem automática ao arrastar perto das bordas
+    LaunchedEffect(dragSel.dragging) {
+        if (dragSel.dragging) {
+            while (true) {
+                withFrameNanos { }
+                val v = dragSel.edgeSpeed
+                if (v != 0f) {
+                    gridState.dispatchRawDelta(v)
+                    applyDragSelection(dragSel.lastX, dragSel.lastY)
+                }
+            }
+        }
+    }
+
+    // Atualização da cadeia da cobra a cada frame enquanto ativa
+    LaunchedEffect(snake.active) {
+        if (snake.active) {
+            var last = 0L
+            while (true) {
+                withFrameNanos { now ->
+                    val dt = if (last == 0L) 0.016f else ((now - last) / 1_000_000_000f).coerceIn(0.001f, 0.05f)
+                    last = now
+                    snake.step(dt)
+                }
+            }
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .onGloballyPositioned { boxRoot = it.positionInRoot() }
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    val pointerId = down.id
+                    val slop = viewConfiguration.touchSlop
+                    var canceled = false
+                    var curX = down.position.x
+                    var curY = down.position.y
+                    withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
+                        while (!canceled) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            if (event.changes.count { it.pressed } >= 2) {
+                                canceled = true
+                            } else {
+                                val ch = event.changes.firstOrNull { it.id == pointerId }
+                                if (ch == null || !ch.pressed) {
+                                    canceled = true
+                                } else {
+                                    curX = ch.position.x
+                                    curY = ch.position.y
+                                    if (hypot(curX - down.position.x, curY - down.position.y) > slop) {
+                                        canceled = true
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (canceled) return@awaitEachGesture
+
+                    val hitId = hitTestItem(curX, curY) ?: return@awaitEachGesture
+                    val hitIdx = currentIndexById[hitId] ?: return@awaitEachGesture
+                    val startSnake = selectedIds.contains(hitId)
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+
+                    if (startSnake) {
+                        // Efeito cobra: fotos selecionadas seguem o dedo
+                        val center = thumbnailBounds[hitId]?.center
+                        snake.ranks.clear()
+                        if (center != null) {
+                            selectedIds
+                                .mapNotNull { sid -> thumbnailBounds[sid]?.let { r -> sid to hypot(r.center.x - center.x, r.center.y - center.y) } }
+                                .sortedBy { it.second }
+                                .forEachIndexed { i, p -> snake.ranks[p.first] = i }
+                        }
+                        snake.reset(boxRoot.x + curX, boxRoot.y + curY)
+                        snake.active = true
+                        scope.launch {
+                            snake.progress.animateTo(
+                                1f,
+                                spring(dampingRatio = 0.80f, stiffness = 380f)
+                            )
+                        }
+                    } else {
+                        // Seleção por arraste: seleciona tudo entre a foto inicial e a que está sob o dedo
+                        if (!selectedIds.contains(hitId)) currentOnEnter(hitId)
+                        dragSel.added.clear()
+                        dragSel.anchorIdx = hitIdx
+                        dragSel.lastIdx = hitIdx
+                        dragSel.lastX = curX
+                        dragSel.lastY = curY
+                        dragSel.edgeSpeed = 0f
+                        dragSel.dragging = true
+                    }
+
+                    val edgePx = 88.dp.toPx()
+                    val maxSpeed = 24f
+                    try {
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            val ch = event.changes.firstOrNull { it.id == pointerId }
+                            event.changes.forEach { it.consume() }
+                            if (ch == null || !ch.pressed) break
+                            curX = ch.position.x
+                            curY = ch.position.y
+                            if (startSnake) {
+                                snake.fingerX = boxRoot.x + curX
+                                snake.fingerY = boxRoot.y + curY
+                            } else {
+                                dragSel.lastX = curX
+                                dragSel.lastY = curY
+                                val h = size.height.toFloat()
+                                dragSel.edgeSpeed = when {
+                                    curY < edgePx -> -((edgePx - curY) / edgePx).coerceIn(0f, 1f) * maxSpeed
+                                    curY > h - edgePx -> ((curY - (h - edgePx)) / edgePx).coerceIn(0f, 1f) * maxSpeed
+                                    else -> 0f
+                                }
+                                applyDragSelection(curX, curY)
+                            }
+                        }
+                    } finally {
+                        if (startSnake) {
+                            scope.launch {
+                                snake.progress.animateTo(
+                                    0f,
+                                    spring(dampingRatio = 0.78f, stiffness = 300f)
+                                )
+                                snake.active = false
+                            }
+                        } else {
+                            dragSel.dragging = false
+                            dragSel.edgeSpeed = 0f
+                            dragSel.anchorIdx = -1
+                            dragSel.added.clear()
+                        }
+                    }
+                }
+            }
             .pointerInput(Unit) {
                 awaitEachGesture {
                     awaitFirstDown(requireUnconsumed = false)
@@ -1880,22 +2121,27 @@ private fun MediaGridContent(
                     key = { it.id },
                     contentType = { "photo" }
                 ) { media ->
+                    val isSel = selectedSet.contains(media.id)
+                    val snakeZ = if (snake.active && isSel) {
+                        2f + (SnakeState.K - (snake.ranks[media.id] ?: (SnakeState.K - 1)).coerceAtMost(SnakeState.K - 1)) * 0.01f
+                    } else 1f
                     OneUIGridThumbnail(
                         media = media,
                         cornerDp = timelineScale.cornerDp,
                         decodeSizePx = if (timelineScale.columns >= 5) 200 else 280,
-                        isSelected = selectedSet.contains(media.id),
+                        isSelected = isSel,
                         selectionMode = selectionMode,
                         flipTracker = flipTracker,
                         flipProgress = flipProgressProvider,
                         pinchScale = pinchScaleProvider,
+                        snake = snake,
                         thumbnailBounds = thumbnailBounds,
                         onClick = {
                             if (selectionMode) onToggleSelect(media.id)
                             else onItemClick(indexById[media.id] ?: 0)
                         },
                         onLongClick = { onEnterSelection(media.id) },
-                        modifier = Modifier.zIndex(1f)
+                        modifier = Modifier.zIndex(snakeZ)
                     )
                 }
             }
@@ -1914,6 +2160,7 @@ private fun OneUIGridThumbnail(
     flipTracker: GridFlipTracker,
     flipProgress: () -> Float,
     pinchScale: () -> Float,
+    snake: SnakeState,
     thumbnailBounds: MutableMap<Long, Rect>,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
@@ -2025,6 +2272,21 @@ private fun OneUIGridThumbnail(
                         alpha = 1f
                         if (newRect != null) {
                             flipTracker.visualBounds[media.id] = newRect
+                        }
+                    }
+
+                    // Efeito cobra: fotos selecionadas seguem o dedo em cadeia
+                    val sp = snake.progress.value
+                    if (isSelected && sp > 0.001f) {
+                        snake.tick // observa a atualização por frame (fase de desenho)
+                        val rect = slotRectHolder.rect
+                        if (rect != null) {
+                            val rank = (snake.ranks[media.id] ?: (SnakeState.K - 1)).coerceIn(0, SnakeState.K - 1)
+                            translationX += (snake.chainX[rank] - rect.center.x) * sp
+                            translationY += (snake.chainY[rank] - rect.center.y) * sp
+                            val shrink = 1f - 0.46f * sp
+                            scaleX *= shrink
+                            scaleY *= shrink
                         }
                     }
                 }
