@@ -11,8 +11,8 @@ android {
         applicationId = "com.oneui.galeria"
         minSdk = 23
         targetSdk = 34
-        versionCode = 16
-        versionName = "1.6.5"
+        versionCode = 17
+        versionName = "1.6.6"
 
         vectorDrawables {
             useSupportLibrary = true

@@ -2593,7 +2593,7 @@ private fun MenuTabContent(
                                 fontWeight = FontWeight.Medium
                             )
                             Text(
-                                text = if (isDarkMode) "AMOLED Preto ativado" else "Tema Claro ativado",
+                                text = if (isDarkMode) "Grafite Moderno ativado" else "Tema Claro ativado",
                                 color = colors.textSecondary,
                                 fontSize = 12.sp
                             )

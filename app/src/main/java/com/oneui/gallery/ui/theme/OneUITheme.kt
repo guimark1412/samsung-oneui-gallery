@@ -1,9 +1,13 @@
 package com.oneui.gallery.ui.theme
 
 import android.app.Activity
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.LocalOverscrollConfiguration
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -31,6 +35,7 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
@@ -51,11 +56,14 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
+import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import kotlin.math.sign
 
 data class OneUIColorPalette(
     val isDark: Boolean,
@@ -75,21 +83,22 @@ data class OneUIColorPalette(
     val selectionScrim: Color
 )
 
+// Paleta "Grafite moderno" com profundidade sutil e visual premium
 val DarkOneUIColors = OneUIColorPalette(
     isDark = true,
-    background = Color(0xFF050507),
-    surfaceCard = Color(0xFF131419),
-    surfaceElevated = Color(0xFF1F2129),
-    popupMenu = Color(0xFF1E2028),
-    floatingPill = Color(0xEB171820),
-    floatingBorder = Color(0x26FFFFFF),
+    background = Color(0xFF141416),
+    surfaceCard = Color(0xFF1C1C1F),
+    surfaceElevated = Color(0xFF27272B),
+    popupMenu = Color(0xFF232327),
+    floatingPill = Color(0xF01C1C1F),
+    floatingBorder = Color(0xFF27272B),
     primaryBlue = Color(0xFF4785FF),
     galleryRose = Color(0xFFF53855),
     aiAccent = Color(0xFF4785FF),
-    textPrimary = Color(0xFFF9FAFC),
-    textSecondary = Color(0xFF91949F),
-    divider = Color(0xFF272933),
-    bottomBar = Color(0xEB0A0B0F),
+    textPrimary = Color(0xFFF2F2F5),
+    textSecondary = Color(0xFF9A9AA3),
+    divider = Color(0xFF27272B),
+    bottomBar = Color(0xF01C1C1F),
     selectionScrim = Color(0x384785FF)
 )
 
@@ -172,12 +181,16 @@ fun OneUITheme(
     }
 }
 
+private fun applyRubberBand(rawOffset: Float, maxStretch: Float): Float {
+    val a = abs(rawOffset)
+    if (a < 0.01f) return 0f
+    return sign(rawOffset) * (maxStretch * a / (a + maxStretch * 2.1f))
+}
+
 /**
- * Samsung One UI 7 / 8 Ergonomic Collapsing Header Scaffold.
- * Displays a spacious Viewing Area at the top (~160.dp) with centered title (34.sp)
- * and subtitle pill badge, collapsing smoothly into a sleek 56.dp toolbar, while
- * allowing the floating One UI 7/8 bottom capsule to float above scrolling content.
+ * Samsung One UI 7 / 8 Ergonomic Collapsing Header Scaffold with silky GPU Rubber-banding.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun OneUICollapsingScaffold(
     title: String,
@@ -190,16 +203,55 @@ fun OneUICollapsingScaffold(
 ) {
     val colors = LocalOneUIColors.current
     val density = LocalDensity.current
+    val scope = rememberCoroutineScope()
     val maxExpandPx = with(density) { 158.dp.toPx() }
+    val maxRubberPx = with(density) { 78.dp.toPx() }
+
     var collapseOffsetPx by remember { mutableFloatStateOf(0f) }
-    LaunchedEffect(title) {
-        collapseOffsetPx = 0f
+    var rawOverscrollPx by remember { mutableFloatStateOf(0f) }
+    val rubberBandAnim = remember { Animatable(0f) }
+
+    fun releaseRubberBand() {
+        rawOverscrollPx = 0f
+        if (abs(rubberBandAnim.value) > 0.5f) {
+            scope.launch {
+                rubberBandAnim.animateTo(
+                    targetValue = 0f,
+                    animationSpec = spring(
+                        dampingRatio = 0.74f,
+                        stiffness = 340f
+                    )
+                )
+            }
+        }
     }
 
-    val nestedScrollConnection = remember(maxExpandPx) {
+    LaunchedEffect(title) {
+        collapseOffsetPx = 0f
+        rawOverscrollPx = 0f
+        rubberBandAnim.snapTo(0f)
+    }
+
+    val nestedScrollConnection = remember(maxExpandPx, maxRubberPx) {
         object : NestedScrollConnection {
             override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
                 val delta = available.y
+                // 1. Se estava esticado no rubber-band e o usuário inverteu o sentido, recolhe 1:1
+                if (source == NestedScrollSource.Drag && abs(rawOverscrollPx) > 0.5f) {
+                    if ((rawOverscrollPx > 0f && delta < 0f) || (rawOverscrollPx < 0f && delta > 0f)) {
+                        val prevRaw = rawOverscrollPx
+                        val nextRaw = if (prevRaw > 0f) {
+                            (prevRaw + delta).coerceAtLeast(0f)
+                        } else {
+                            (prevRaw + delta).coerceAtMost(0f)
+                        }
+                        rawOverscrollPx = nextRaw
+                        val damped = applyRubberBand(nextRaw, maxRubberPx)
+                        scope.launch { rubberBandAnim.snapTo(damped) }
+                        return Offset(0f, nextRaw - prevRaw)
+                    }
+                }
+                // 2. Recolhe o cabeçalho One UI antes de rolar a lista para baixo
                 if (delta < 0f && collapseOffsetPx < maxExpandPx) {
                     val prev = collapseOffsetPx
                     collapseOffsetPx = (collapseOffsetPx - delta).coerceIn(0f, maxExpandPx)
@@ -214,12 +266,42 @@ fun OneUICollapsingScaffold(
                 source: NestedScrollSource
             ): Offset {
                 val delta = available.y
+                // 1. Expande o cabeçalho One UI quando a lista chega no topo
                 if (delta > 0f && collapseOffsetPx > 0f) {
                     val prev = collapseOffsetPx
                     collapseOffsetPx = (collapseOffsetPx - delta).coerceIn(0f, maxExpandPx)
-                    return Offset(0f, -(collapseOffsetPx - prev))
+                    val used = -(collapseOffsetPx - prev)
+                    val remaining = delta - used
+                    if (source == NestedScrollSource.Drag && remaining > 0.5f && collapseOffsetPx <= 0.5f) {
+                        rawOverscrollPx += remaining
+                        val damped = applyRubberBand(rawOverscrollPx, maxRubberPx)
+                        scope.launch { rubberBandAnim.snapTo(damped) }
+                        return Offset(0f, delta)
+                    }
+                    return Offset(0f, used)
+                }
+                // 2. Rubber-banding suave ao puxar além do topo ou da base
+                if (source == NestedScrollSource.Drag && abs(delta) > 0.2f) {
+                    val atTopPullDown = delta > 0f && collapseOffsetPx <= 0.5f
+                    val atBottomPullUp = delta < 0f && collapseOffsetPx >= maxExpandPx - 0.5f
+                    if (atTopPullDown || atBottomPullUp) {
+                        rawOverscrollPx = (rawOverscrollPx + delta).coerceIn(-maxRubberPx * 6f, maxRubberPx * 6f)
+                        val damped = applyRubberBand(rawOverscrollPx, maxRubberPx)
+                        scope.launch { rubberBandAnim.snapTo(damped) }
+                        return Offset(0f, delta)
+                    }
                 }
                 return Offset.Zero
+            }
+
+            override suspend fun onPreFling(available: Velocity): Velocity {
+                releaseRubberBand()
+                return Velocity.Zero
+            }
+
+            override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
+                releaseRubberBand()
+                return Velocity.Zero
             }
         }
     }
@@ -242,34 +324,46 @@ fun OneUICollapsingScaffold(
             .background(colors.background)
             .statusBarsPadding()
             .nestedScroll(nestedScrollConnection)
-            .pointerInput(maxExpandPx) {
+            .pointerInput(maxExpandPx, maxRubberPx) {
                 awaitEachGesture {
                     awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Final)
                     var totalDx = 0f
                     var totalDy = 0f
                     var engaged = false
-                    do {
-                        val event = awaitPointerEvent(pass = PointerEventPass.Final)
-                        val pressed = event.changes.filter { it.pressed }
-                        if (pressed.size == 1) {
-                            val ch = pressed[0]
-                            if (!ch.isConsumed) {
-                                val delta = ch.positionChange()
-                                totalDx += delta.x
-                                totalDy += delta.y
-                                if (!engaged && abs(totalDy) > 14f && abs(totalDy) > abs(totalDx) * 1.25f) {
-                                    engaged = true
-                                }
-                                if (engaged && delta.y != 0f) {
-                                    collapseOffsetPx = (collapseOffsetPx - delta.y).coerceIn(0f, maxExpandPx)
+                    try {
+                        do {
+                            val event = awaitPointerEvent(pass = PointerEventPass.Final)
+                            val pressed = event.changes.filter { it.pressed }
+                            if (pressed.size == 1) {
+                                val ch = pressed[0]
+                                if (!ch.isConsumed) {
+                                    val delta = ch.positionChange()
+                                    totalDx += delta.x
+                                    totalDy += delta.y
+                                    if (!engaged && abs(totalDy) > 14f && abs(totalDy) > abs(totalDx) * 1.25f) {
+                                        engaged = true
+                                    }
+                                    if (engaged && delta.y != 0f) {
+                                        val prev = collapseOffsetPx
+                                        collapseOffsetPx = (collapseOffsetPx - delta.y).coerceIn(0f, maxExpandPx)
+                                        val unused = delta.y + (collapseOffsetPx - prev)
+                                        if (abs(unused) > 0.2f) {
+                                            rawOverscrollPx = (rawOverscrollPx + unused)
+                                                .coerceIn(-maxRubberPx * 6f, maxRubberPx * 6f)
+                                            val damped = applyRubberBand(rawOverscrollPx, maxRubberPx)
+                                            scope.launch { rubberBandAnim.snapTo(damped) }
+                                        }
+                                    }
+                                } else {
+                                    engaged = false
                                 }
                             } else {
                                 engaged = false
                             }
-                        } else {
-                            engaged = false
-                        }
-                    } while (event.changes.any { it.pressed })
+                        } while (event.changes.any { it.pressed })
+                    } finally {
+                        releaseRubberBand()
+                    }
                 }
             }
     ) {
@@ -291,8 +385,11 @@ fun OneUICollapsingScaffold(
                         modifier = Modifier
                             .alpha(expandedAlpha)
                             .graphicsLayer {
-                                scaleX = titleScale
-                                scaleY = titleScale
+                                val rb = rubberBandAnim.value
+                                val extraScale = if (rb > 0f) (rb / maxRubberPx) * 0.04f else 0f
+                                scaleX = titleScale + extraScale
+                                scaleY = titleScale + extraScale
+                                translationY = if (rb > 0f) rb * 0.38f else 0f
                             }
                     ) {
                         Text(
@@ -309,7 +406,8 @@ fun OneUICollapsingScaffold(
                             Spacer(modifier = Modifier.height(6.dp))
                             Surface(
                                 shape = RoundedCornerShape(14.dp),
-                                color = colors.surfaceCard
+                                color = colors.surfaceCard,
+                                border = BorderStroke(0.6.dp, colors.divider)
                             ) {
                                 Text(
                                     text = subtitle,
@@ -327,7 +425,7 @@ fun OneUICollapsingScaffold(
                 }
             }
 
-            // Compact Interaction Action Bar (56.dp)
+            // Compact Interaction Action Bar (54.dp)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -362,12 +460,18 @@ fun OneUICollapsingScaffold(
                 headerExtra()
             }
 
+            // Content area with GPU Rubber-banding (replaces default overscroll glow/stretch)
             Box(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
+                    .graphicsLayer {
+                        translationY = rubberBandAnim.value
+                    }
             ) {
-                content()
+                CompositionLocalProvider(LocalOverscrollConfiguration provides null) {
+                    content()
+                }
             }
         }
 
@@ -392,6 +496,7 @@ fun OneUISectionCard(
         modifier = modifier.fillMaxWidth(),
         shape = OneUIShapeLarge,
         color = colors.surfaceCard,
+        border = BorderStroke(0.75.dp, colors.divider),
         tonalElevation = 0.dp
     ) {
         content()
