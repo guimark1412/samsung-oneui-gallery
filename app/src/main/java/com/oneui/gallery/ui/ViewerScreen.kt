@@ -383,6 +383,7 @@ fun ViewerScreen(
         ) {
             HorizontalPager(
                 state = pagerState,
+                beyondBoundsPageCount = 1,
                 userScrollEnabled = !isPinching && activeZoomScale <= 1.02f && !isDraggingToDismiss && !isDismissing,
                 pageSpacing = 12.dp,
                 modifier = Modifier
@@ -675,11 +676,14 @@ fun ViewerScreen(
                     contentAlignment = Alignment.Center
                 ) {
                     val activeDragCorner = if (isCurrentPage && dragOffsetY > 0.5f) (dragFraction * 22f).dp else 0.dp
-                    AsyncImage(
-                        model = ImageRequest.Builder(context)
+                    val pageRequest = remember(media.uri) {
+                        ImageRequest.Builder(context)
                             .data(media.uri)
-                            .crossfade(true)
-                            .build(),
+                            .crossfade(false)
+                            .build()
+                    }
+                    AsyncImage(
+                        model = pageRequest,
                         contentDescription = media.name,
                         contentScale = ContentScale.Fit,
                         modifier = Modifier
@@ -846,11 +850,16 @@ fun ViewerScreen(
                                             scope.launch { pagerState.animateScrollToPage(idx) }
                                         }
                                 ) {
-                                    AsyncImage(
-                                        model = ImageRequest.Builder(context)
+                                    val thumbRequest = remember(thumb.uri) {
+                                        ImageRequest.Builder(context)
                                             .data(thumb.uri)
                                             .size(120)
-                                            .build(),
+                                            .allowRgb565(true)
+                                            .crossfade(false)
+                                            .build()
+                                    }
+                                    AsyncImage(
+                                        model = thumbRequest,
                                         contentDescription = null,
                                         contentScale = ContentScale.Crop,
                                         alpha = if (isActive) 1f else 0.65f,
@@ -940,7 +949,7 @@ fun ViewerScreen(
                     it.bottom - rootOffset.y
                 )
             }
-            val sRect: Rect?
+            val sRect: Rect
             val eRect: Rect
             val startCorner: Float
             val endCorner: Float
@@ -966,32 +975,30 @@ fun ViewerScreen(
                 heroAlpha = 1f
             }
 
-            if (sRect != null) {
-                val curLeft = sRect.left + (eRect.left - sRect.left) * t
-                val curTop = sRect.top + (eRect.top - sRect.top) * t
-                val curW = (sRect.width + (eRect.width - sRect.width) * t).coerceAtLeast(1f)
-                val curH = (sRect.height + (eRect.height - sRect.height) * t).coerceAtLeast(1f)
-                val curCorner = (startCorner + (endCorner - startCorner) * t).coerceAtLeast(0f)
+            val curLeft = sRect.left + (eRect.left - sRect.left) * t
+            val curTop = sRect.top + (eRect.top - sRect.top) * t
+            val curW = (sRect.width + (eRect.width - sRect.width) * t).coerceAtLeast(1f)
+            val curH = (sRect.height + (eRect.height - sRect.height) * t).coerceAtLeast(1f)
+            val curCorner = (startCorner + (endCorner - startCorner) * t).coerceAtLeast(0f)
 
-                val wDp = with(density) { curW.toDp() }
-                val hDp = with(density) { curH.toDp() }
+            val wDp = with(density) { curW.toDp() }
+            val hDp = with(density) { curH.toDp() }
 
-                Box(
-                    modifier = Modifier
-                        .offset { IntOffset(curLeft.roundToInt(), curTop.roundToInt()) }
-                        .size(width = wDp, height = hDp)
-                        .graphicsLayer { alpha = heroAlpha }
-                        .clip(RoundedCornerShape(curCorner.dp))
-                ) {
-                    AsyncImage(
-                        model = ImageRequest.Builder(context)
-                            .data(heroItem.uri)
-                            .build(),
-                        contentDescription = heroItem.name,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                }
+            Box(
+                modifier = Modifier
+                    .offset { IntOffset(curLeft.roundToInt(), curTop.roundToInt()) }
+                    .size(width = wDp, height = hDp)
+                    .graphicsLayer { alpha = heroAlpha }
+                    .clip(RoundedCornerShape(curCorner.dp))
+            ) {
+                AsyncImage(
+                    model = ImageRequest.Builder(context)
+                        .data(heroItem.uri)
+                        .build(),
+                    contentDescription = heroItem.name,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
             }
         }
 

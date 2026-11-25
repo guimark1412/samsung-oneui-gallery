@@ -67,6 +67,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.DriveFileMove
 import androidx.compose.material.icons.outlined.AutoStories
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Close
@@ -93,7 +94,6 @@ import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Collections
 import androidx.compose.material.icons.rounded.CreateNewFolder
 import androidx.compose.material.icons.rounded.Dashboard
-import androidx.compose.material.icons.rounded.DriveFileMove
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.LockOpen
@@ -140,6 +140,7 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
@@ -1882,6 +1883,7 @@ private fun MediaGridContent(
                     OneUIGridThumbnail(
                         media = media,
                         cornerDp = timelineScale.cornerDp,
+                        decodeSizePx = if (timelineScale.columns >= 5) 200 else 280,
                         isSelected = selectedSet.contains(media.id),
                         selectionMode = selectionMode,
                         flipTracker = flipTracker,
@@ -1906,6 +1908,7 @@ private fun MediaGridContent(
 private fun OneUIGridThumbnail(
     media: MediaItem,
     cornerDp: Int,
+    decodeSizePx: Int,
     isSelected: Boolean,
     selectionMode: Boolean,
     flipTracker: GridFlipTracker,
@@ -1924,12 +1927,13 @@ private fun OneUIGridThumbnail(
             thumbnailBounds.remove(media.id)
         }
     }
-    // Request estável: evita realocar/reiniciar o carregamento a cada recomposição
-    val request = remember(media.uri) {
+    // Request estável e decodificado proporcionalmente à célula (RGB_565 = metade da RAM)
+    val request = remember(media.uri, decodeSizePx) {
         ImageRequest.Builder(context)
             .data(media.uri)
-            .size(320)
-            .crossfade(true)
+            .size(decodeSizePx)
+            .allowRgb565(true)
+            .crossfade(false)
             .build()
     }
 
@@ -1941,15 +1945,19 @@ private fun OneUIGridThumbnail(
         ),
         label = "oneui_select_scale"
     )
-    val cornerRadius by animateDpAsState(
-        targetValue = if (selectionMode && isSelected) 8.dp else cornerDp.dp,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioNoBouncy,
-            stiffness = Spring.StiffnessMedium
-        ),
-        label = "oneui_select_corner"
-    )
-    val shape = RoundedCornerShape(cornerRadius)
+    val shape = if (cornerDp == 0 && !(selectionMode && isSelected)) {
+        RectangleShape
+    } else {
+        val cornerRadius by animateDpAsState(
+            targetValue = if (selectionMode && isSelected) 8.dp else cornerDp.dp,
+            animationSpec = spring(
+                dampingRatio = Spring.DampingRatioNoBouncy,
+                stiffness = Spring.StiffnessMedium
+            ),
+            label = "oneui_select_corner"
+        )
+        RoundedCornerShape(cornerRadius)
+    }
 
     Box(
         modifier = modifier
@@ -2222,12 +2230,16 @@ private fun AlbumsTabContent(
                                     modifier = Modifier.size(36.dp)
                                 )
                             } else {
-                                AsyncImage(
-                                    model = ImageRequest.Builder(context)
+                                val coverRequest = remember(album.coverUri) {
+                                    ImageRequest.Builder(context)
                                         .data(album.coverUri)
-                                        .size(380)
-                                        .crossfade(true)
-                                        .build(),
+                                        .size(320)
+                                        .allowRgb565(true)
+                                        .crossfade(false)
+                                        .build()
+                                }
+                                AsyncImage(
+                                    model = coverRequest,
                                     contentDescription = album.name,
                                     contentScale = ContentScale.Crop,
                                     modifier = Modifier.fillMaxSize()
@@ -2969,7 +2981,7 @@ private fun SelectionMoreMenu(
         DropdownMenuItem(
             enabled = hasSelection,
             text = { Text("Mover para álbum...", color = colors.textPrimary, fontSize = 15.sp) },
-            leadingIcon = { Icon(Icons.Rounded.DriveFileMove, null, tint = colors.primaryBlue) },
+            leadingIcon = { Icon(Icons.AutoMirrored.Rounded.DriveFileMove, null, tint = colors.primaryBlue) },
             onClick = {
                 onDismiss()
                 onMoveToAlbum()

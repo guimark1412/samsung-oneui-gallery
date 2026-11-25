@@ -503,12 +503,16 @@ fun OneUICollapsingScaffold(
                 }
             }
 
-            // Compact Interaction Action Bar (54.dp)
+            // Compact Interaction Action Bar (54.dp) — slides down smoothly with top rubber-banding
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(54.dp)
-                    .padding(horizontal = 10.dp),
+                    .padding(horizontal = 10.dp)
+                    .graphicsLayer {
+                        val rb = if (isRubberDragging) dragRubberPx else rubberBandAnim.value
+                        translationY = if (rb > 0f) rb else 0f
+                    },
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 if (navigationIcon != null) {
